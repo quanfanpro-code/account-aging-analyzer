@@ -16,5 +16,6 @@ def test_空DataFrame也建Sheet并写占位行(tmp_path):
     wb = load_workbook(out)
     assert "有数据" in wb.sheetnames
     assert "空表" in wb.sheetnames
+    assert wb["有数据"]["B1"].alignment.horizontal == "center"
     texts = [str(c.value) for row in wb["空表"].iter_rows() for c in row if c.value]
     assert any("无数据" in t for t in texts)

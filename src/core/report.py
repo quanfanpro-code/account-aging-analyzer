@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
-"""审计底稿生成 — 调用 make_excel(theme='deep-navy') 摩根系标准格式"""
+"""生成深海蓝标准格式审计底稿"""
 from __future__ import annotations
-import logging
-import sys
 from pathlib import Path
 from typing import Union
 
@@ -11,24 +9,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+from make_excel import make_excel
 from src.core.models import AgingResult
-
-try:
-    from make_excel import make_excel
-    MAKE_EXCEL_AVAILABLE = True
-except ImportError:
-    # 从非项目根目录运行时，按本文件位置推算项目根再试一次（src/core/report.py → 上两级）
-    _root = str(Path(__file__).resolve().parents[2])
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-    try:
-        from make_excel import make_excel
-        MAKE_EXCEL_AVAILABLE = True
-    except ImportError:
-        MAKE_EXCEL_AVAILABLE = False
-        logging.getLogger(__name__).warning(
-            "未找到 make_excel 模块，审计底稿将回退为无样式的裸 to_excel 输出"
-        )
 
 PathLike = Union[str, Path]
 
@@ -56,16 +38,9 @@ class ReportGenerator:
             ('参数说明', self._build_config(config)),
         ]
 
-        if MAKE_EXCEL_AVAILABLE:
-            make_excel(sheets, output_path, theme='deep-navy')
-            # 补写两个账龄汇总表的合计行 SUM 公式
-            self._patch_summary_formulas(output_path, debit_results, config, '借方账龄汇总表')
-            self._patch_summary_formulas(output_path, credit_results, config, '贷方账龄汇总表')
-        else:
-            # 回退：无 make_excel 时用裸 to_excel
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                for name, sheet_df in sheets:
-                    sheet_df.to_excel(writer, sheet_name=name, index=False)
+        make_excel(sheets, output_path)
+        self._patch_summary_formulas(output_path, debit_results, config, '借方账龄汇总表')
+        self._patch_summary_formulas(output_path, credit_results, config, '贷方账龄汇总表')
 
     # ─── 账龄汇总表 ───────────────────────────────────────────
     def _build_summary(self, results: list[AgingResult], config: dict) -> pd.DataFrame:

@@ -7,6 +7,7 @@ import pandas as pd
 from src.core.fifo_engine import FIFOEngine
 from src.core.models import AgingResult
 from src.core.data_loader import DataLoader
+from src.core.direction_resolver import resolve_direction
 
 ProgressCallback = Optional[Callable[[int, int], None]]
 
@@ -44,8 +45,6 @@ class AgingOrchestrator:
         self.last_warnings = []
         self.last_stats = {}
         self.last_direction_log = []
-        from src.core.direction_resolver import DirectionResolver
-        self._resolver = DirectionResolver()
         self._debit_engine = FIFOEngine(
             cutoff_date=self.cutoff_date,
             buckets=self.buckets,
@@ -169,7 +168,7 @@ class AgingOrchestrator:
 
             # 三维度判断方向
             debit_total, credit_total = subject_balance_map.get(subj_code, (0.0, 0.0))
-            direction, basis = self._resolver.resolve(
+            direction, basis = resolve_direction(
                 subject_code=subj_code,
                 subject_name=subject_name,
                 opening_debit_total=debit_total,

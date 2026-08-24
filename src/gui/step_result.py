@@ -180,21 +180,20 @@ class StepResult(ctk.CTkFrame):
             self._log(f"默认方向: {'借方' if self._state['direction'] == 'debit' else '贷方'}")
             self._log(f"期初模式: {'分档模式' if self._state.get('opening_aging_columns') else '铁板模式'}")
 
-            # 加载并清洗期初余额
+            # 加载并清洗期初余额（可选：不选时按空表、期初视为 0）
             opening_df = self._state.get("opening_df")
             if opening_df is None:
-                self._log("❌ 期初余额数据未加载，请返回步骤 1")
-                self._msg_queue.put(("calc_done", False))
-                return
-
-            opening_df = self._loader.apply_mapping(opening_df, self._state.get("opening_mapping", {}))
-            opening_df = self._loader.clean(opening_df, key_column="科目编码")
-            opening_df, open_warnings = self._loader.convert_types(
-                opening_df, amount_columns=["借方余额", "贷方余额"]
-            )
-            for w in open_warnings:
-                self._log(f"⚠️ {w}")
-            self._log(f"期初余额：{len(opening_df)} 行（清洗后）")
+                self._log("ℹ️ 未选择期初余额，期初余额按 0 计算")
+                opening_df = pd.DataFrame(columns=["科目编码", "科目名称", "明细名称", "借方余额", "贷方余额"])
+            else:
+                opening_df = self._loader.apply_mapping(opening_df, self._state.get("opening_mapping", {}))
+                opening_df = self._loader.clean(opening_df, key_column="科目编码")
+                opening_df, open_warnings = self._loader.convert_types(
+                    opening_df, amount_columns=["借方余额", "贷方余额"]
+                )
+                for w in open_warnings:
+                    self._log(f"⚠️ {w}")
+                self._log(f"期初余额：{len(opening_df)} 行（清洗后）")
 
             # 加载并清洗序时账
             journal_df = self._state.get("journal_df")

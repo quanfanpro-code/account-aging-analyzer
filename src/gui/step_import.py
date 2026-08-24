@@ -78,6 +78,13 @@ class StepImport(ctk.CTkFrame):
                 text_color=("gray50", "gray60"),
             )
             aging_detect_label.pack(padx=8, pady=4, anchor="w")
+            # 提示：期初余额可选，不选则按 0 计算
+            tip = ctk.CTkLabel(
+                aging_detect_frame, text="（不选则期初余额视为 0）",
+                font=ctk.CTkFont(size=11),
+                text_color=("gray50", "gray60"),
+            )
+            tip.pack(padx=8, pady=(0, 4), anchor="w")
 
         # 列映射区
         map_row = preview_row + (2 if is_opening else 1)
@@ -313,18 +320,18 @@ class StepImport(ctk.CTkFrame):
             self._state["journal_mapping"] = mapper.get_mapping()
 
     def validate(self) -> bool:
-        """校验：两个文件都已选择、必填字段已映射"""
+        """校验：序时账必选；期初余额可选（不选则期初视为 0），选了才校验期初映射"""
         errors = []
-        if not self._state.get("opening_path"):
-            errors.append("请选择期初余额文件")
+        # 期初余额文件改为可选：不选则期初余额按 0 计算
         if not self._state.get("journal_path"):
             errors.append("请选择序时账文件")
 
         if not errors:
-            try:
-                self._opening_mapper.validate_required(REQUIRED_FIELDS["balance"])
-            except ValueError as e:
-                errors.append(f"期初余额：{e}")
+            if self._state.get("opening_path"):
+                try:
+                    self._opening_mapper.validate_required(REQUIRED_FIELDS["balance"])
+                except ValueError as e:
+                    errors.append(f"期初余额：{e}")
             try:
                 self._journal_mapper.validate_required(REQUIRED_FIELDS["journal"])
             except ValueError as e:

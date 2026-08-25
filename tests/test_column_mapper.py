@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 import pytest
-from src.core.column_mapper import ColumnMapper
+import src.core.column_mapper as column_mapper
+from src.core.column_mapper import ColumnMapper, REQUIRED_FIELDS
+
+
+def _required_any_fields():
+    value = getattr(column_mapper, "REQUIRED_ANY_FIELDS", None)
+    assert value is not None, "科目编码或科目名称至少一个的规则尚未实现"
+    return value
 
 
 # ============ 智能匹配：长词优先 ============
@@ -122,3 +129,31 @@ def test_智能匹配_科目编码不抢科目名称列():
     result = mapper.auto_map(columns, field_type="journal")
     assert result["科目编码"] is None
     assert result["科目名称"] == "科目名称"
+
+
+def test_科目名称已映射时不强制要求科目编码():
+    mapper = ColumnMapper()
+    mapper.auto_map(
+        ["日期", "科目名称", "明细名称", "借方金额", "贷方金额"],
+        field_type="journal",
+    )
+    mapper.validate_required(REQUIRED_FIELDS["journal"], _required_any_fields()["journal"])
+
+
+def test_科目编码和名称都未映射时明确提示():
+    mapper = ColumnMapper()
+    mapper.auto_map(["日期", "明细名称", "借方金额", "贷方金额"], field_type="journal")
+    with pytest.raises(ValueError, match="科目编码或科目名称"):
+        mapper.validate_required(REQUIRED_FIELDS["journal"], _required_any_fields()["journal"])
+
+
+def test_其他必要字段仍一次列出():
+    mapper = ColumnMapper()
+    mapper.auto_map(["科目名称"], field_type="journal")
+    with pytest.raises(ValueError) as error:
+        mapper.validate_required(REQUIRED_FIELDS["journal"], _required_any_fields()["journal"])
+    text = str(error.value)
+    assert "日期" in text
+    assert "明细名称" in text
+    assert "借方金额" in text
+    assert "贷方金额" in text

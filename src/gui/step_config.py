@@ -1,11 +1,50 @@
 # -*- coding: utf-8 -*-
-"""步骤 2：配置参数 — 账龄分档 + 截止日期 + 余额方向"""
+"""步骤 2：配置账龄分档、账龄名称和计算日期。"""
 from __future__ import annotations
 import customtkinter as ctk
 from datetime import date
 from tkinter import messagebox
 
 from src.gui.widgets import Card, make_button
+
+
+def default_bucket_label(lo: int, hi: int) -> str:
+    return f"{lo}天以上" if hi == 9999 else f"{lo}-{hi}天"
+
+
+def sync_default_bucket_label(
+    current: str,
+    previous_default: str,
+    lo: int,
+    hi: int,
+) -> tuple[str, str]:
+    new_default = default_bucket_label(lo, hi)
+    return (new_default if current == previous_default else current, new_default)
+
+
+def validate_bucket_labels(labels: list[str], bucket_count: int) -> None:
+    if len(labels) != bucket_count:
+        raise ValueError("账龄名称数量必须与账龄档位数量一致")
+    normalized = [str(label).strip() for label in labels]
+    if any(not label for label in normalized):
+        raise ValueError("账龄名称不能为空")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("账龄名称不能重复")
+
+
+def parse_opening_date(value: str, cutoff: date, has_opening: bool) -> date | None:
+    if not has_opening:
+        return None
+    text = value.strip()
+    if not text:
+        raise ValueError("选择期初余额后必须填写期初余额日期")
+    try:
+        opening_date = date.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError("期初余额日期格式错误，请输入 YYYY-MM-DD") from error
+    if opening_date >= cutoff:
+        raise ValueError("期初余额日期必须早于截止日期")
+    return opening_date
 
 
 class StepConfig(ctk.CTkFrame):
@@ -27,16 +66,29 @@ class StepConfig(ctk.CTkFrame):
         self._date_card = self._build_date_card()
         self._date_card.grid(row=0, column=1, padx=(6, 0), sticky="new")
 
-        # 右列下：方向卡片
-        self._direction_card = self._build_direction_card()
-        self._direction_card.grid(row=1, column=1, padx=(6, 0), pady=(8, 0), sticky="new")
-
         # 分档行容器引用
         self._bucket_rows: list[dict] = []
 
     def refresh(self) -> None:
         """从共享状态刷新 UI 显示"""
         self._rebuild_bucket_rows()
+        opening_date = self._state.get("opening_date")
+        has_opening = bool(self._state.get("opening_path"))
+        if has_opening:
+            self._opening_date_entry.configure(state="normal")
+            self._opening_date_var.set(opening_date.isoformat() if opening_date else "")
+            self._opening_date_tip.configure(
+                text="请选择期初余额对应的日期（必须早于截止日期）",
+                text_color=("gray50", "gray60"),
+            )
+        else:
+            self._opening_date_var.set("")
+            self._state["opening_date"] = None
+            self._opening_date_entry.configure(state="disabled")
+            self._opening_date_tip.configure(
+                text="无期初余额，无需填写",
+                text_color=("#27AE60", "#27AE60"),
+            )
 
     def _build_buckets_card(self) -> Card:
         card = Card(self, title="账龄分档设置")
@@ -51,7 +103,7 @@ class StepConfig(ctk.CTkFrame):
         h1.grid(row=0, column=0, padx=4, pady=(4, 2), sticky="w")
         h2 = ctk.CTkLabel(c, text="上限（天）", font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
         h2.grid(row=0, column=1, padx=4, pady=(4, 2), sticky="w")
-        h3 = ctk.CTkLabel(c, text="显示别名（如：3个月内）", font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
+        h3 = ctk.CTkLabel(c, text="账龄名称", font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
         h3.grid(row=0, column=2, padx=4, pady=(4, 2), sticky="w")
         h4 = ctk.CTkLabel(c, text="操作", font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
         h4.grid(row=0, column=3, padx=4, pady=(4, 2), sticky="w")
@@ -85,7 +137,7 @@ class StepConfig(ctk.CTkFrame):
         buckets = self._state.get("buckets", [(0, 90), (90, 180), (180, 365), (365, 730), (730, 9999)])
         labels = self._state.get("bucket_labels", [])
         for i, (lo, hi) in enumerate(buckets):
-            label = labels[i] if i < len(labels) else ""
+            label = labels[i].strip() if i < len(labels) and str(labels[i]).strip() else default_bucket_label(lo, hi)
             self._add_bucket_row(lo, hi, i, label)
 
     def _add_bucket_row(self, lo: int, hi: int, index: int, label: str = "") -> None:
@@ -99,21 +151,40 @@ class StepConfig(ctk.CTkFrame):
 
         lo_var = ctk.StringVar(value=str(lo))
         hi_var = ctk.StringVar(value=str(hi))
-        alias_var = ctk.StringVar(value=label)
+        auto_label = default_bucket_label(lo, hi)
+        alias_var = ctk.StringVar(value=label or auto_label)
 
         e1 = ctk.CTkEntry(row_frame, textvariable=lo_var, width=80, height=30)
         e1.grid(row=0, column=0, padx=4, sticky="w")
         e2 = ctk.CTkEntry(row_frame, textvariable=hi_var, width=80, height=30)
         e2.grid(row=0, column=1, padx=4, sticky="w")
-        e3 = ctk.CTkEntry(row_frame, textvariable=alias_var, width=160, height=30,
-                          placeholder_text="留空则显示 0-90天")
+        e3 = ctk.CTkEntry(row_frame, textvariable=alias_var, width=160, height=30)
         e3.grid(row=0, column=2, padx=4, sticky="ew")
 
         del_btn = make_button(row_frame, "✕", level="weak", width=30, height=30,
                               command=lambda idx=index: self._delete_bucket(idx))
         del_btn.grid(row=0, column=3, padx=4)
 
-        self._bucket_rows.append({"lo_var": lo_var, "hi_var": hi_var, "alias_var": alias_var, "frame": row_frame})
+        row = {
+            "lo_var": lo_var, "hi_var": hi_var, "alias_var": alias_var,
+            "default_label": auto_label, "frame": row_frame,
+        }
+        self._bucket_rows.append(row)
+
+        def sync_label(*_args) -> None:
+            try:
+                current = alias_var.get()
+                new_label, new_default = sync_default_bucket_label(
+                    current, row["default_label"], int(lo_var.get()), int(hi_var.get()),
+                )
+                row["default_label"] = new_default
+                if new_label != current:
+                    alias_var.set(new_label)
+            except ValueError:
+                return
+
+        lo_var.trace_add("write", sync_label)
+        hi_var.trace_add("write", sync_label)
 
     def _add_bucket(self) -> None:
         """新增一个分档"""
@@ -124,7 +195,7 @@ class StepConfig(ctk.CTkFrame):
         else:
             last_hi = 0
         buckets.append((last_hi, last_hi + 365))
-        labels.append("")  # 新分档默认无别名
+        labels.append(default_bucket_label(*buckets[-1]))
         self._state["buckets"] = buckets
         self._state["bucket_labels"] = labels
         self._rebuild_bucket_rows()
@@ -146,7 +217,9 @@ class StepConfig(ctk.CTkFrame):
     def _reset_buckets(self) -> None:
         """重置为默认分档"""
         self._state["buckets"] = [(0, 90), (90, 180), (180, 365), (365, 730), (730, 9999)]
-        self._state["bucket_labels"] = []
+        self._state["bucket_labels"] = [
+            default_bucket_label(lo, hi) for lo, hi in self._state["buckets"]
+        ]
         self._rebuild_bucket_rows()
 
     def _read_buckets_from_ui(self) -> list[tuple[int, int]]:
@@ -188,75 +261,40 @@ class StepConfig(ctk.CTkFrame):
         # 期初日期（用于期初分档账龄偏移）
         lbl2 = ctk.CTkLabel(c, text="期初余额日期（YYYY-MM-DD）：", font=ctk.CTkFont(size=12))
         lbl2.pack(anchor="w", pady=(8, 4))
-        # 安全计算去年同一天（处理闰年 2-29）
-        today = date.today()
-        try:
-            last_year_date = today.replace(year=today.year - 1)
-        except ValueError:
-            # 2月29日在去年不存在，回退到2月28日
-            last_year_date = date(today.year - 1, 2, 28)
-        self._opening_date_var = ctk.StringVar(value=last_year_date.strftime("%Y-%m-%d"))
-        entry2 = ctk.CTkEntry(c, textvariable=self._opening_date_var, width=200, height=32)
-        entry2.pack(anchor="w", pady=(0, 4))
+        self._opening_date_var = ctk.StringVar(value="")
+        self._opening_date_entry = ctk.CTkEntry(c, textvariable=self._opening_date_var, width=200, height=32)
+        self._opening_date_entry.pack(anchor="w", pady=(0, 4))
 
         tip = ctk.CTkLabel(c, text='期初日期用于将期初分档账龄偏移到截止日期（期初"1年以内"→截止日"1-2年"）',
                            font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
         tip.pack(anchor="w")
 
         # 提示：如果期初无分档则不影响计算
-        tip2 = ctk.CTkLabel(c, text="（未检测到分档列时，也会用该日期精确计算铁板模式下的期初账龄）",
-                           font=ctk.CTkFont(size=10), text_color=("gray50", "gray60"))
-        tip2.pack(anchor="w")
-        return card
-
-    def _build_direction_card(self) -> Card:
-        card = Card(self, title="默认方向")
-        c = card.content
-
-        tip = ctk.CTkLabel(c, text="系统会自动判断每个科目的方向，识别不了的才用这里选的默认方向",
-                           font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"))
-        tip.pack(anchor="w", pady=(4, 4))
-
-        self._dir_var = ctk.StringVar(value="debit")
-        r1 = ctk.CTkRadioButton(c, text="借方（应收 / 预付 / 其他应收）",
-                                variable=self._dir_var, value="debit",
-                                font=ctk.CTkFont(size=13))
-        r1.pack(anchor="w", pady=(4, 4))
-        r2 = ctk.CTkRadioButton(c, text="贷方（应付 / 预收 / 其他应付）",
-                                variable=self._dir_var, value="credit",
-                                font=ctk.CTkFont(size=13))
-        r2.pack(anchor="w", pady=(0, 4))
+        self._opening_date_tip = ctk.CTkLabel(
+            c, text="", font=ctk.CTkFont(size=10), text_color=("gray50", "gray60"),
+        )
+        self._opening_date_tip.pack(anchor="w")
         return card
 
     def validate(self) -> bool:
         """校验参数合法性"""
         errors = []
 
-        # 校验截止日期（用局部变量传递，避免校验失败时引用未定义的 d）
+        # 校验截止日期
         cutoff = None
         try:
-            parts = self._date_var.get().strip().split("-")
-            if len(parts) != 3:
-                raise ValueError
-            cutoff = date(int(parts[0]), int(parts[1]), int(parts[2]))
+            cutoff = date.fromisoformat(self._date_var.get().strip())
             self._state["cutoff_date"] = cutoff
-        except (ValueError, IndexError):
+        except ValueError:
             errors.append("截止日期格式错误，请输入 YYYY-MM-DD")
 
-        # 校验期初日期（可选；如填写则必须早于截止日期）
-        try:
-            parts = self._opening_date_var.get().strip().split("-")
-            if len(parts) == 3:
-                od = date(int(parts[0]), int(parts[1]), int(parts[2]))
-                if cutoff is not None and od >= cutoff:
-                    errors.append("期初日期必须早于截止日期")
-                self._state["opening_date"] = od
-            else:
-                self._state["opening_date"] = None
-        except (ValueError, IndexError):
-            if self._opening_date_var.get().strip():
-                errors.append("期初余额日期格式错误，请输入 YYYY-MM-DD")
-            self._state["opening_date"] = None
+        if cutoff is not None:
+            try:
+                self._state["opening_date"] = parse_opening_date(
+                    self._opening_date_var.get(), cutoff, bool(self._state.get("opening_path")),
+                )
+            except ValueError as error:
+                errors.append(str(error))
 
         # 校验分档
         buckets = self._read_buckets_from_ui()
@@ -276,12 +314,13 @@ class StepConfig(ctk.CTkFrame):
                     errors.append(f"第 {i+1} 档下限 ({buckets[i][0]}) 应等于第 {i} 档上限 ({buckets[i-1][1]})")
             self._state["buckets"] = buckets
 
-        # 读取别名标签
+        # 账龄名称必须与档位逐项对应、非空且唯一
         bucket_labels = self._read_labels_from_ui()
-        self._state["bucket_labels"] = bucket_labels
-
-        # 方向
-        self._state["direction"] = self._dir_var.get()
+        try:
+            validate_bucket_labels(bucket_labels, len(buckets))
+            self._state["bucket_labels"] = bucket_labels
+        except ValueError as error:
+            errors.append(str(error))
 
         if errors:
             messagebox.showwarning("校验未通过", "\n".join(errors))

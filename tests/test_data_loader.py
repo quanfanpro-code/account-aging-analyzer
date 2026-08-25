@@ -108,3 +108,20 @@ def test_类型转换_括号负数():
     result, warnings = loader.convert_types(df, amount_columns=["借方金额"])
     assert result["借方金额"].tolist() == [-1234.0, -500.0]
     assert warnings == []
+
+
+def test_工作表列表与按名称读取(tmp_path):
+    path = tmp_path / "多表.xlsx"
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"标记": ["封面"]}).to_excel(writer, sheet_name="说明", index=False)
+        pd.DataFrame({"标记": ["真实序时账"]}).to_excel(writer, sheet_name="序时账", index=False)
+
+    loader = DataLoader()
+    assert loader.list_sheet_names(str(path)) == ["说明", "序时账"]
+    assert loader.initial_sheet(["说明", "序时账"]) is None
+    assert loader.load_sheet(str(path), "序时账").iloc[0]["标记"] == "真实序时账"
+
+
+def test_单工作表自动选中_空列表不选中():
+    assert DataLoader.initial_sheet(["Sheet1"]) == "Sheet1"
+    assert DataLoader.initial_sheet([]) is None

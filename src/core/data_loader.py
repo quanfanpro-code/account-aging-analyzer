@@ -11,6 +11,20 @@ class DataLoader:
 
     _THOUSANDS_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")
 
+    def list_sheet_names(self, path: str) -> list[str]:
+        """返回工作簿中的全部工作表名称。"""
+        with pd.ExcelFile(path) as workbook:
+            return list(workbook.sheet_names)
+
+    @staticmethod
+    def initial_sheet(sheet_names: list[str]) -> str | None:
+        """单工作表自动选择，多工作表或空列表交给用户选择。"""
+        return sheet_names[0] if len(sheet_names) == 1 else None
+
+    def load_sheet(self, path: str, sheet_name: str) -> pd.DataFrame:
+        """按用户明确选择的名称读取一个工作表。"""
+        return pd.read_excel(path, sheet_name=sheet_name)
+
     def apply_mapping(self, df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
         """按 {逻辑字段: 物理列名} 字典重命名列；映射为 None 的字段忽略"""
         rename = {v: k for k, v in mapping.items() if v is not None and v in df.columns}

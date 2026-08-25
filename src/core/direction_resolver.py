@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-"""三维度综合判断科目借贷方向"""
+"""往来科目固定方向及历史调用兼容判断。"""
 from __future__ import annotations
+
+from src.core.current_accounts import classify_current_account
 
 DEBIT_KEYWORDS = [
     "其他应收", "应收账款", "应收", "预付账款", "预付",
@@ -19,7 +21,11 @@ def resolve_direction(
     opening_credit_total: float,
     default_direction: str,
 ) -> tuple[str, str]:
-    """按余额、编码、名称、默认值的顺序返回方向及判断依据。"""
+    """八类往来按类别固定方向，其他历史调用保留原回退规则。"""
+    match = classify_current_account(subject_code, subject_name)
+    if match.status == "retained":
+        return str(match.direction), match.basis
+
     if opening_debit_total > opening_credit_total:
         return "debit", "balance"
     if opening_credit_total > opening_debit_total:

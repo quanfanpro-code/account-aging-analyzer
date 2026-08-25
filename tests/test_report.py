@@ -204,7 +204,7 @@ def test_账龄汇总表_合计列等于分档合计而非原始期末(tmp_path)
     wb = openpyxl.load_workbook(output)
     sheet = wb["借方账龄汇总表"]
     header_text = " ".join(str(cell.value) for cell in sheet[1] if cell.value)
-    assert "负余额" in header_text
+    assert "反向余额（待核对）" in header_text
     # B2 起写：列号偏移 +1（A=1 留空，B=2 起写）
     bucket_sum = (sheet.cell(row=2, column=5).value or 0) + (sheet.cell(row=2, column=6).value or 0)
     negative_value = sheet.cell(row=2, column=7).value or 0
@@ -268,3 +268,51 @@ def test_合计行SUM公式写入正确sheet且字体为黑(tmp_path):
     cell = sheet.cell(row=3, column=5)
     assert cell.value == "=SUM(E2:E2)"
     assert cell.font.color is not None and str(cell.font.color.rgb).endswith("000000")
+
+
+def test_显式空白或重复账龄名称拒绝导出():
+    with pytest.raises(ValueError, match="不能为空"):
+        ReportGenerator._get_bucket_labels({
+            "buckets": [(0, 90), (90, 180)], "bucket_labels": ["", ""],
+        })
+    with pytest.raises(ValueError, match="不能重复"):
+        ReportGenerator._get_bucket_labels({
+            "buckets": [(0, 90), (90, 180)], "bucket_labels": ["半年内", "半年内"],
+        })
+
+
+def test_未提供名称时按档位生成非空默认名称():
+    assert ReportGenerator._get_bucket_labels({
+        "buckets": [(0, 90), (730, 9999)],
+    }) == ["0-90天", "730天以上"]
+
+
+def test_无反向余额也保留反向余额列():
+    engine = FIFOEngine(
+        cutoff_date=date(2025, 6, 1), buckets=[(0, 365)], direction="debit",
+    )
+    result = engine.calculate(
+        subject_code="1122", subject_name="应收账款", detail_name="客户A",
+        opening_balance=100.0, transactions=[],
+    )
+    summary = ReportGenerator()._build_summary(
+        [result], {"buckets": [(0, 365)], "bucket_labels": ["1年以内"]},
+    )
+    assert list(summary.columns) == [
+        "科目编码", "科目名称", "明细名称", "1年以内",
+        "反向余额（待核对）", "合计",
+    ]
+    assert summary.iloc[0]["反向余额（待核对）"] == 0.0
+
+
+def test_参数说明使用固定方向和反向余额新口径():
+    config_table = ReportGenerator()._build_config({
+        "buckets": [(0, 365)],
+        "bucket_labels": ["1年以内"],
+        "direction_policy": "八类往来按科目类别固定方向",
+        "negative_balance_policy": "反向余额以负数单列展示，不改变科目所属汇总表",
+    })
+    text = " ".join(str(value) for value in config_table.to_numpy().ravel())
+    assert "八类往来按科目类别固定方向" in text
+    assert "反向余额以负数单列展示" in text
+    assert "默认方向" not in text

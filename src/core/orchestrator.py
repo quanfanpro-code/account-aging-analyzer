@@ -8,6 +8,7 @@ from src.core.fifo_engine import FIFOEngine
 from src.core.models import AgingResult
 from src.core.data_loader import DataLoader
 from src.core.direction_resolver import resolve_direction
+from src.core.current_accounts import CATEGORY_COLUMN, DIRECTION_COLUMN
 
 ProgressCallback = Optional[Callable[[int, int], None]]
 
@@ -64,7 +65,7 @@ class AgingOrchestrator:
                 if col not in df.columns:
                     continue
                 if col == "明细名称":
-                    df[col] = df[col].fillna("(未填明细)")
+                    df[col] = df[col].fillna("（未填明细）")
                 df[col] = df[col].astype(str).str.replace(r"^(\d+)\.0+$", r"\1", regex=True)
 
         # 检测到的期初分档列也纳入金额清洗（可能含 "1,000" 这类千分位文本，直接求和会崩）
@@ -109,12 +110,17 @@ class AgingOrchestrator:
                     "数据时间段可能重叠，同一笔账可能被重复计算，请核对"
                 )
 
+        use_category_key = all(CATEGORY_COLUMN in df.columns for df in (opening_df, journal_df))
+        group_columns = (
+            [CATEGORY_COLUMN, "科目编码", "明细名称"]
+            if use_category_key else ["科目编码", "明细名称"]
+        )
         opening_groups = (
-            {key: group.copy() for key, group in opening_df.groupby(["科目编码", "明细名称"], sort=False)}
+            {key: group.copy() for key, group in opening_df.groupby(group_columns, sort=False, dropna=False)}
             if not opening_df.empty else {}
         )
         journal_groups = (
-            {key: group.copy() for key, group in journal_df.groupby(["科目编码", "明细名称"], sort=False)}
+            {key: group.copy() for key, group in journal_df.groupby(group_columns, sort=False, dropna=False)}
             if not journal_df.empty else {}
         )
 
@@ -148,10 +154,14 @@ class AgingOrchestrator:
         total = len(all_keys)
         results: list[AgingResult] = []
 
-        for idx, (subj_code, detail_name) in enumerate(all_keys):
+        for idx, key in enumerate(all_keys):
+            if use_category_key:
+                _category, subj_code, detail_name = key
+            else:
+                subj_code, detail_name = key
             # 获取期初余额（可能不存在）
-            opening_rows = opening_groups.get((subj_code, detail_name), pd.DataFrame())
-            txn_df = journal_groups.get((subj_code, detail_name), pd.DataFrame())
+            opening_rows = opening_groups.get(key, pd.DataFrame())
+            txn_df = journal_groups.get(key, pd.DataFrame())
 
             # 获取科目名称
             if not opening_rows.empty:
@@ -166,15 +176,23 @@ class AgingOrchestrator:
                     else subj_code
                 )
 
-            # 三维度判断方向
-            debit_total, credit_total = subject_balance_map.get(subj_code, (0.0, 0.0))
-            direction, basis = resolve_direction(
-                subject_code=subj_code,
-                subject_name=subject_name,
-                opening_debit_total=debit_total,
-                opening_credit_total=credit_total,
-                default_direction=self.default_direction,
-            )
+            # 正式过滤数据直接使用统一规则写入的固定方向；旧调用保留兼容判断。
+            direction_values = []
+            for group in (opening_rows, txn_df):
+                if DIRECTION_COLUMN in group.columns:
+                    direction_values.extend(group[DIRECTION_COLUMN].dropna().astype(str).unique())
+            direction_values = list(dict.fromkeys(direction_values))
+            if len(direction_values) == 1:
+                direction, basis = direction_values[0], "category"
+            else:
+                debit_total, credit_total = subject_balance_map.get(subj_code, (0.0, 0.0))
+                direction, basis = resolve_direction(
+                    subject_code=subj_code,
+                    subject_name=subject_name,
+                    opening_debit_total=debit_total,
+                    opening_credit_total=credit_total,
+                    default_direction=self.default_direction,
+                )
             self.last_direction_log.append(
                 f"{subj_code} {subject_name} -> {'借方' if direction == 'debit' else '贷方'} (依据: {basis})"
             )

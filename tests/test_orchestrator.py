@@ -333,9 +333,9 @@ def test_明细名称为空的行不丢失且不显示nan():
     )
     results = orch.run(opening_df, journal_df)
     detail_names = {r.detail_name for r in results}
-    assert "(未填明细)" in detail_names
+    assert "（未填明细）" in detail_names
     assert "nan" not in detail_names
-    empty_row = next(r for r in results if r.detail_name == "(未填明细)")
+    empty_row = next(r for r in results if r.detail_name == "（未填明细）")
     assert empty_row.closing_balance == pytest.approx(500.0)
 
 

@@ -45,13 +45,11 @@ class ReportGenerator:
     # ─── 账龄汇总表 ───────────────────────────────────────────
     def _build_summary(self, results: list[AgingResult], config: dict) -> pd.DataFrame:
         labels = self._get_bucket_labels(config)
-        has_neg = any(abs(r.negative_balance) > 0.005 for r in results)
 
         headers = ["科目编码", "科目名称", "明细名称"]
         for label in labels:
             headers.append(label)
-        if has_neg:
-            headers.append("负余额")
+        headers.append("反向余额（待核对）")
         headers.append("合计")
 
         rows = []
@@ -59,8 +57,7 @@ class ReportGenerator:
             row = [r.subject_code, r.subject_name, r.detail_name]
             for amt in r.bucket_totals:
                 row.append(amt)
-            if has_neg:
-                row.append(r.negative_balance)
+            row.append(r.negative_balance)
             row.append(r.total_check)
             rows.append(row)
 
@@ -70,17 +67,15 @@ class ReportGenerator:
             sum_row = ["合计", "", ""]
             for i in range(len(results[0].bucket_totals)):
                 sum_row.append(sum(r.bucket_totals[i] for r in results))
-            if has_neg:
-                sum_row.append(sum(r.negative_balance for r in results))
+            sum_row.append(sum(r.negative_balance for r in results))
             sum_row.append(sum(r.total_check for r in results))
             rows.append(sum_row)
         else:
             # 无数据时加占位行，确保 sheet 被创建
-            placeholder = ["(无数据)", "", ""]
+            placeholder = ["无数据", "", ""]
             for label in labels:
                 placeholder.append(0.0)
-            if has_neg:
-                placeholder.append(0.0)
+            placeholder.append(0.0)
             placeholder.append(0.0)
             rows.append(placeholder)
 
@@ -95,7 +90,6 @@ class ReportGenerator:
         wb = load_workbook(output_path)
         ws = wb[sheet_name]
 
-        has_neg = any(abs(r.negative_balance) > 0.005 for r in results)
         labels = self._get_bucket_labels(config)
         sum_row = len(results) + 2  # make_excel 从第 1 行写表头，数据从第 2 行开始
 
@@ -103,7 +97,7 @@ class ReportGenerator:
         # make_excel 从 B 列(col=2) 开始写，所以：
         # B=科目编码, C=科目名称, D=明细名称, E=分档1, F=分档2, ..., 最后=合计
         first_num_col = 5  # E 列（B=科目编码, C=科目名称, D=明细名称 之后）
-        last_num_col = 5 + len(labels) + (1 if has_neg else 0)  # 含合计列
+        last_num_col = 5 + len(labels) + 1  # 固定反向余额列之后为合计列
 
         for col in range(first_num_col, last_num_col + 1):
             col_letter = get_column_letter(col)
@@ -179,20 +173,29 @@ class ReportGenerator:
         rows = [
             ("计算截止日期", str(config.get("cutoff_date", ""))),
             ("账龄分档", ", ".join(labels)),
-            ("默认方向", config.get("direction", "")),
+            ("方向口径", config.get("direction_policy", "八类往来按科目类别固定方向")),
             ("计算口径", config.get("fifo_policy", "先进先出法 (收付款按最老余额优先核销)")),
             ("期初余额日期", str(config.get("opening_date", ""))),
             ("期初模式", config.get("aging_mode", "铁板模式")),
             ("分档边界规则", config.get("bucket_boundary_rule", "边界点归前档")),
-            ("负余额展示", config.get("negative_balance_policy", "负余额单列展示，不并入正常账龄分档")),
+            ("反向余额说明", config.get(
+                "negative_balance_policy",
+                "反向余额以负数单列展示，不改变科目所属汇总表",
+            )),
         ]
         return pd.DataFrame(rows, columns=["参数", "值"])
 
     @staticmethod
     def _get_bucket_labels(config: dict) -> list[str]:
-        """获取分档显示标签：优先用 bucket_labels，回退到 '{lo}-{hi}天'"""
-        custom_labels: list[str] | None = config.get("bucket_labels")
+        """获取严格非空且唯一的账龄名称。"""
         buckets: list[tuple[int, int]] = config.get("buckets", [])
-        if custom_labels and len(custom_labels) == len(buckets):
-            return list(custom_labels)
-        return [f"{lo}-{hi}天" for lo, hi in buckets]
+        if "bucket_labels" not in config or config.get("bucket_labels") is None:
+            return [f"{lo}天以上" if hi == 9999 else f"{lo}-{hi}天" for lo, hi in buckets]
+        labels = [str(label).strip() for label in config["bucket_labels"]]
+        if len(labels) != len(buckets):
+            raise ValueError("账龄名称数量必须与账龄档位数量一致")
+        if any(not label for label in labels):
+            raise ValueError("账龄名称不能为空")
+        if len(set(labels)) != len(labels):
+            raise ValueError("账龄名称不能重复")
+        return labels

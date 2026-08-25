@@ -25,8 +25,13 @@ JOURNAL_FIELD_KEYWORDS: dict[str, list[str]] = {
 }
 
 REQUIRED_FIELDS = {
-    "balance": ["科目编码", "明细名称", "借方余额", "贷方余额"],
-    "journal": ["日期", "科目编码", "明细名称", "借方金额", "贷方金额"],
+    "balance": ["明细名称", "借方余额", "贷方余额"],
+    "journal": ["日期", "明细名称", "借方金额", "贷方金额"],
+}
+
+REQUIRED_ANY_FIELDS = {
+    "balance": [("科目编码", "科目名称")],
+    "journal": [("科目编码", "科目名称")],
 }
 
 # 匹配某些字段时要跳过的列名子串，防止误匹配：
@@ -67,9 +72,16 @@ class ColumnMapper:
     def get_mapping(self) -> dict[str, Optional[str]]:
         return dict(self._mapping)
 
-    def validate_required(self, fields: list[str]) -> None:
+    def validate_required(
+        self,
+        fields: list[str],
+        any_of_groups: list[tuple[str, ...]] | None = None,
+    ) -> None:
         """校验必填字段是否已映射，未映射抛 ValueError"""
         missing = [f for f in fields if not self._mapping.get(f)]
+        for group in any_of_groups or []:
+            if not any(self._mapping.get(field) for field in group):
+                missing.append("或".join(group))
         if missing:
             raise ValueError(f"以下必填字段未映射: {', '.join(missing)}")
 

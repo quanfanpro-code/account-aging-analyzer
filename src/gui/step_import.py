@@ -4,12 +4,65 @@ from __future__ import annotations
 import customtkinter as ctk
 import pandas as pd
 import threading
-from pathlib import Path
 from tkinter import filedialog, messagebox
 
 from src.gui.widgets import Card, make_button
-from src.core.column_mapper import ColumnMapper, REQUIRED_FIELDS
+from src.core.column_mapper import ColumnMapper, REQUIRED_ANY_FIELDS, REQUIRED_FIELDS
+from src.core.current_accounts import CurrentAccountFilterResult, filter_current_accounts
 from src.core.data_loader import DataLoader
+
+
+def reset_source_payload(state: dict, prefix: str) -> None:
+    """切换工作表时清空由旧工作表产生的状态。"""
+    state[f"{prefix}_sheet"] = None
+    state[f"{prefix}_df"] = None
+    state[f"{prefix}_mapping"] = {}
+    state[f"{prefix}_filter_summary"] = ""
+    if prefix == "opening":
+        state["opening_aging_columns"] = {}
+        state["opening_has_aging"] = False
+
+
+def next_source_request(state: dict, prefix: str) -> int:
+    """生成递增请求号，用于丢弃晚到的旧读取结果。"""
+    key = f"{prefix}_request_id"
+    state[key] = int(state.get(key, 0)) + 1
+    return state[key]
+
+
+def is_current_source_request(state: dict, prefix: str, request_id: int) -> bool:
+    return state.get(f"{prefix}_request_id") == request_id
+
+
+def clear_source_state(state: dict, prefix: str) -> None:
+    """彻底清除一个文件卡片及其派生状态。"""
+    next_source_request(state, prefix)
+    reset_source_payload(state, prefix)
+    state[f"{prefix}_path"] = None
+    state[f"{prefix}_sheet_names"] = []
+    if prefix == "opening":
+        state["opening_date"] = None
+
+
+def format_filter_summary(result: CurrentAccountFilterResult) -> str:
+    """把过滤统计整理成导入页可直接显示的简短中文摘要。"""
+    lines = [
+        f"原始 {result.original_rows} 行｜保留 {result.retained_rows} 行｜忽略 {result.ignored_rows} 行",
+    ]
+    if result.ignored_counts:
+        lines.append("忽略原因：" + "；".join(
+            f"{reason} {count} 行" for reason, count in result.ignored_counts.items()
+        ))
+    lines.append("八类往来：" + "；".join(
+        f"{category} {count} 行" for category, count in result.category_counts.items()
+    ))
+    lines.append("识别方式：" + "；".join(
+        f"{basis} {count} 行" for basis, count in result.recognition_counts.items()
+    ))
+    amounts = "，".join(f"{name} {value:.2f}" for name, value in result.blank_detail_amounts.items())
+    lines.append(f"未填明细 {result.blank_detail_rows} 行（{amounts}）")
+    lines.append(f"名称与编码冲突 {result.warning_count} 行")
+    return "\n".join(lines)
 
 
 class StepImport(ctk.CTkFrame):
@@ -27,6 +80,11 @@ class StepImport(ctk.CTkFrame):
         # 初始化共享状态：是否启用分档模式由“是否检测到分档列”自动决定。
         self._state.setdefault("opening_has_aging", False)
         self._state.setdefault("opening_aging_columns", {})
+        for prefix in ("opening", "journal"):
+            self._state.setdefault(f"{prefix}_sheet_names", [])
+            self._state.setdefault(f"{prefix}_sheet", None)
+            self._state.setdefault(f"{prefix}_request_id", 0)
+            self._state.setdefault(f"{prefix}_filter_summary", "")
 
         # 上部分：期初余额卡片（左）+ 序时账卡片（右）
         self.grid_columnconfigure(0, weight=1)
@@ -55,8 +113,23 @@ class StepImport(ctk.CTkFrame):
         btn = make_button(row_frame, "选择文件", level="secondary", width=90)
         btn.grid(row=0, column=1, sticky="e")
 
+        if is_opening:
+            clear_btn = make_button(row_frame, "清除期初", level="weak", width=80)
+            clear_btn.grid(row=0, column=2, padx=(6, 0), sticky="e")
+
+        # 工作表选择行
+        sheet_frame = ctk.CTkFrame(c, fg_color="transparent")
+        sheet_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        sheet_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(sheet_frame, text="工作表：", width=62, anchor="w").grid(row=0, column=0, sticky="w")
+        sheet_var = ctk.StringVar(value="尚未读取工作表")
+        sheet_combo = ctk.CTkComboBox(
+            sheet_frame, variable=sheet_var, values=["尚未读取工作表"], state="disabled",
+        )
+        sheet_combo.grid(row=0, column=1, sticky="ew")
+
         # 预览区
-        preview_row = 1
+        preview_row = 2
         preview_frame = ctk.CTkScrollableFrame(c, height=160, fg_color=("gray90", "gray15"))
         preview_frame.grid(row=preview_row, column=0, sticky="ew", pady=(4, 4))
 
@@ -98,6 +171,12 @@ class StepImport(ctk.CTkFrame):
         map_frame = ctk.CTkFrame(c, fg_color="transparent")
         map_frame.grid(row=map_row + 1, column=0, sticky="ew")
 
+        summary_label = ctk.CTkLabel(
+            c, text="", font=ctk.CTkFont(size=11), anchor="w",
+            justify="left", wraplength=430, text_color=("gray35", "gray70"),
+        )
+        summary_label.grid(row=map_row + 2, column=0, sticky="ew", pady=(8, 2))
+
         # 存储引用
         field_type = "balance" if "期初" in label else "journal"
         card._path_var = path_var
@@ -105,6 +184,10 @@ class StepImport(ctk.CTkFrame):
         card._preview_label = preview_label
         card._map_frame = map_frame
         card._field_type = field_type
+        card._prefix = "opening" if is_opening else "journal"
+        card._sheet_var = sheet_var
+        card._sheet_combo = sheet_combo
+        card._summary_label = summary_label
         card._map_widgets = {}
         if is_opening:
             card._aging_detect_frame = aging_detect_frame
@@ -112,79 +195,101 @@ class StepImport(ctk.CTkFrame):
 
         # 按钮事件
         btn.configure(command=lambda: self._on_select_file(card))
+        sheet_combo.configure(command=lambda value: self._on_select_sheet(card, value))
+        if is_opening:
+            clear_btn.configure(command=lambda: self._clear_opening(card))
 
         return card
 
     def _on_select_file(self, card: Card) -> None:
-        """打开文件选择对话框，加载 Excel 并预览"""
+        """一次选择一个 Excel 文件并读取工作表列表。"""
         # Card 必有 _title_label 属性（可能为 None），直接用，勿走 winfo_children 间接取
         title = card._title_label.cget("text") if card._title_label else "文件"
-        if card._field_type == "journal":
-            paths = filedialog.askopenfilenames(
-                title=f"选择{title}（可多选）",
-                filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
-            )
-            if not paths:
-                return
-            path = " ; ".join(paths)
-        else:
-            path = filedialog.askopenfilename(
-                title=f"选择{title}",
-                filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
-            )
-            if not path:
-                return
-            paths = [path]
+        path = filedialog.askopenfilename(
+            title=f"选择{title}",
+            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
 
+        clear_source_state(self._state, card._prefix)
+        self._reset_card_display(card)
         card._path_var.set(path)
-
-        # 通过 field_type 区分期初/序时账
-        if card._field_type == "balance":
-            self._state["opening_path"] = path
-        else:
-            self._state["journal_path"] = path
+        self._state[f"{card._prefix}_path"] = path
+        request_id = next_source_request(self._state, card._prefix)
 
         # 读取放后台线程，避免大文件卡住界面；读完后回主线程更新
-        card._preview_label.configure(
-            text="正在读取文件，请稍候...",
-            text_color=("#E67E22", "#E67E22"),
-        )
-        threading.Thread(target=self._load_file_worker, args=(card, list(paths)), daemon=True).start()
+        self._set_preview_message(card, "正在读取文件，请稍候...", "#E67E22")
+        threading.Thread(
+            target=self._load_sheet_names_worker,
+            args=(card, path, request_id), daemon=True,
+        ).start()
 
-    @staticmethod
-    def _read_first_sheet(path: str, notes: list[str]) -> pd.DataFrame:
-        """读取 Excel 第一个工作表；多 sheet 时记录提示"""
-        xf = pd.ExcelFile(path)
-        if len(xf.sheet_names) > 1:
-            notes.append(
-                f"文件 {Path(path).name} 有 {len(xf.sheet_names)} 个工作表，"
-                f"只读取了第一个工作表「{xf.sheet_names[0]}」"
-            )
-        return pd.read_excel(xf, sheet_name=0)
-
-    def _load_file_worker(self, card: Card, paths: list[str]) -> None:
-        """后台线程读取 Excel，不碰界面控件"""
-        notes: list[str] = []
+    def _load_sheet_names_worker(self, card: Card, path: str, request_id: int) -> None:
+        """后台读取工作表名称，不碰界面控件。"""
         try:
-            if card._field_type == "journal" and len(paths) > 1:
-                from src.core.journal_merger import merge_journal_files
-                dfs = [self._read_first_sheet(p, notes) for p in paths]
-                df = merge_journal_files(dfs, warnings_out=notes)
-            else:
-                df = self._read_first_sheet(paths[0], notes)
+            sheet_names = self._loader.list_sheet_names(path)
         except Exception as e:
-            self.after(0, lambda err=str(e): self._on_load_failed(card, err))
+            self.after(0, lambda err=str(e): self._on_load_failed(card, request_id, err))
             return
-        self.after(0, lambda: self._on_load_success(card, df, notes))
+        self.after(0, lambda: self._on_sheet_names_success(card, request_id, sheet_names))
 
-    def _on_load_failed(self, card: Card, err: str) -> None:
+    def _on_sheet_names_success(self, card: Card, request_id: int, sheet_names: list[str]) -> None:
+        if not is_current_source_request(self._state, card._prefix, request_id):
+            return
+        self._state[f"{card._prefix}_sheet_names"] = sheet_names
+        if not sheet_names:
+            self._on_load_failed(card, request_id, "工作簿中没有可读取的工作表")
+            return
+        card._sheet_combo.configure(values=sheet_names, state="normal")
+        initial = self._loader.initial_sheet(sheet_names)
+        if initial is None:
+            card._sheet_var.set("请选择工作表")
+            self._set_preview_message(card, "文件包含多个工作表，请手动选择", "#E67E22")
+            return
+        card._sheet_var.set(initial)
+        self._select_sheet(card, initial)
+
+    def _on_select_sheet(self, card: Card, sheet_name: str) -> None:
+        if sheet_name in {"", "请选择工作表", "尚未读取工作表"}:
+            return
+        self._select_sheet(card, sheet_name)
+
+    def _select_sheet(self, card: Card, sheet_name: str) -> None:
+        path = self._state.get(f"{card._prefix}_path")
+        if not path:
+            return
+        reset_source_payload(self._state, card._prefix)
+        self._state[f"{card._prefix}_sheet"] = sheet_name
+        card._sheet_var.set(sheet_name)
+        self._reset_payload_display(card)
+        request_id = next_source_request(self._state, card._prefix)
+        self._set_preview_message(card, "正在读取工作表，请稍候...", "#E67E22")
+        threading.Thread(
+            target=self._load_sheet_worker,
+            args=(card, path, sheet_name, request_id), daemon=True,
+        ).start()
+
+    def _load_sheet_worker(self, card: Card, path: str, sheet_name: str, request_id: int) -> None:
+        try:
+            df = self._loader.load_sheet(path, sheet_name)
+        except Exception as e:
+            self.after(0, lambda err=str(e): self._on_load_failed(card, request_id, err))
+            return
+        self.after(0, lambda: self._on_load_success(card, request_id, df))
+
+    def _on_load_failed(self, card: Card, request_id: int, err: str) -> None:
         """读取失败（主线程）"""
-        card._preview_label.configure(
-            text="（读取失败）", text_color=("#E74C3C", "#E74C3C"))
+        if not is_current_source_request(self._state, card._prefix, request_id):
+            return
+        reset_source_payload(self._state, card._prefix)
+        self._set_preview_message(card, "（读取失败）", "#E74C3C")
         messagebox.showerror("读取失败", f"无法读取 Excel 文件：{err}")
 
-    def _on_load_success(self, card: Card, df: pd.DataFrame, notes: list[str]) -> None:
+    def _on_load_success(self, card: Card, request_id: int, df: pd.DataFrame) -> None:
         """读取成功后的界面更新（主线程）"""
+        if not is_current_source_request(self._state, card._prefix, request_id):
+            return
         mapper = self._opening_mapper if card._field_type == "balance" else self._journal_mapper
 
         # 保存到共享状态
@@ -196,7 +301,7 @@ class StepImport(ctk.CTkFrame):
             self._state["journal_df"] = df
 
         # 更新预览（含多 sheet / 重复记录等提示）
-        self._show_preview(card, df, notes)
+        self._show_preview(card, df)
 
         # 自动匹配列映射
         columns = list(df.columns)
@@ -210,6 +315,73 @@ class StepImport(ctk.CTkFrame):
             self._state["opening_mapping"] = mapper.get_mapping()
         else:
             self._state["journal_mapping"] = mapper.get_mapping()
+        self._recalculate_filter_summary(card, mapper)
+
+    def _set_preview_message(self, card: Card, text: str, color) -> None:
+        for widget in card._preview_frame.winfo_children():
+            widget.destroy()
+        label = ctk.CTkLabel(
+            card._preview_frame, text=text, font=ctk.CTkFont(size=12),
+            text_color=(color, color) if isinstance(color, str) and color.startswith("#") else color,
+        )
+        label.pack(padx=8, pady=8, anchor="w")
+        card._preview_label = label
+
+    def _reset_payload_display(self, card: Card) -> None:
+        self._set_preview_message(card, "（尚未读取工作表）", ("gray50", "gray60"))
+        for widget in card._map_frame.winfo_children():
+            widget.destroy()
+        card._map_widgets = {}
+        card._summary_label.configure(text="")
+        if hasattr(card, "_aging_detect_label"):
+            card._aging_detect_label.configure(text="")
+
+    def _reset_card_display(self, card: Card) -> None:
+        self._reset_payload_display(card)
+        card._sheet_combo.configure(values=["尚未读取工作表"], state="disabled")
+        card._sheet_var.set("尚未读取工作表")
+
+    def _clear_opening(self, card: Card) -> None:
+        clear_source_state(self._state, "opening")
+        self._opening_mapper = ColumnMapper()
+        card._path_var.set("")
+        self._reset_card_display(card)
+
+    def _recalculate_filter_summary(self, card: Card, mapper: ColumnMapper) -> None:
+        prefix = card._prefix
+        df = self._state.get(f"{prefix}_df")
+        mapping = mapper.get_mapping()
+        if df is None:
+            return
+        if not mapping.get("科目编码") and not mapping.get("科目名称"):
+            text = "请先完成科目编码或科目名称映射"
+            self._state[f"{prefix}_filter_summary"] = text
+            card._summary_label.configure(text=text, text_color=("#E67E22", "#E67E22"))
+            return
+
+        mapped = self._loader.apply_mapping(df, mapping)
+        if prefix == "opening":
+            amount_columns = ["借方余额", "贷方余额"]
+            data_kind = "opening"
+            source_name = "期初余额"
+        else:
+            amount_columns = ["借方金额", "贷方金额"]
+            data_kind = "journal"
+            source_name = "序时账"
+        date_columns = ["日期"] if prefix == "journal" else []
+        mapped, type_warnings = self._loader.convert_types(
+            mapped, amount_columns=amount_columns, date_columns=date_columns,
+        )
+        result = filter_current_accounts(
+            mapped,
+            data_kind=data_kind,
+            source_label=f"{source_name}/{self._state.get(f'{prefix}_sheet') or ''}",
+        )
+        text = format_filter_summary(result)
+        if type_warnings:
+            text += "\n数据提示：" + "；".join(type_warnings)
+        self._state[f"{prefix}_filter_summary"] = text
+        card._summary_label.configure(text=text, text_color=("gray35", "gray70"))
 
     def _show_preview(self, card: Card, df: pd.DataFrame, notes: list[str] | None = None) -> None:
         """在预览区显示前 10 行（notes 为读取时的提示，如多 sheet 只读第一个）"""
@@ -318,6 +490,7 @@ class StepImport(ctk.CTkFrame):
             self._state["opening_mapping"] = mapper.get_mapping()
         else:
             self._state["journal_mapping"] = mapper.get_mapping()
+        self._recalculate_filter_summary(card, mapper)
 
     def validate(self) -> bool:
         """校验：序时账必选；期初余额可选（不选则期初视为 0），选了才校验期初映射"""
@@ -326,14 +499,23 @@ class StepImport(ctk.CTkFrame):
         if not self._state.get("journal_path"):
             errors.append("请选择序时账文件")
 
+        if self._state.get("opening_path") and not self._state.get("opening_sheet"):
+            errors.append("请选择期初余额工作表")
+        if self._state.get("journal_path") and not self._state.get("journal_sheet"):
+            errors.append("请选择序时账工作表")
+
         if not errors:
             if self._state.get("opening_path"):
                 try:
-                    self._opening_mapper.validate_required(REQUIRED_FIELDS["balance"])
+                    self._opening_mapper.validate_required(
+                        REQUIRED_FIELDS["balance"], REQUIRED_ANY_FIELDS["balance"],
+                    )
                 except ValueError as e:
                     errors.append(f"期初余额：{e}")
             try:
-                self._journal_mapper.validate_required(REQUIRED_FIELDS["journal"])
+                self._journal_mapper.validate_required(
+                    REQUIRED_FIELDS["journal"], REQUIRED_ANY_FIELDS["journal"],
+                )
             except ValueError as e:
                 errors.append(f"序时账：{e}")
 

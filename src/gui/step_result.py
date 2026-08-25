@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """步骤 3：计算输出 — 执行计算 + 日志 + 导出"""
 from __future__ import annotations
+import pandas as pd
 import customtkinter as ctk
 import queue
 import threading
@@ -13,6 +14,12 @@ from src.gui.widgets import Card, make_button
 from src.core.orchestrator import AgingOrchestrator
 from src.core.report import ReportGenerator
 from src.core.data_loader import DataLoader
+from src.core.current_accounts import (
+    filter_current_accounts,
+    find_category_conflicts,
+    format_category_conflicts,
+)
+from src.gui.step_import import format_filter_summary
 
 
 class StepResult(ctk.CTkFrame):
@@ -177,7 +184,7 @@ class StepResult(ctk.CTkFrame):
             self._log("===== 开始往来账款账龄分析 =====")
             self._log(f"截止日期: {self._state['cutoff_date']}")
             self._log(f"账龄分档: {self._state['buckets']}")
-            self._log(f"默认方向: {'借方' if self._state['direction'] == 'debit' else '贷方'}")
+            self._log("方向口径: 八类往来按科目类别固定方向")
             self._log(f"期初模式: {'分档模式' if self._state.get('opening_aging_columns') else '铁板模式'}")
 
             # 加载并清洗期初余额（可选：不选时按空表、期初视为 0）
@@ -187,13 +194,11 @@ class StepResult(ctk.CTkFrame):
                 opening_df = pd.DataFrame(columns=["科目编码", "科目名称", "明细名称", "借方余额", "贷方余额"])
             else:
                 opening_df = self._loader.apply_mapping(opening_df, self._state.get("opening_mapping", {}))
-                opening_df = self._loader.clean(opening_df, key_column="科目编码")
                 opening_df, open_warnings = self._loader.convert_types(
                     opening_df, amount_columns=["借方余额", "贷方余额"]
                 )
                 for w in open_warnings:
                     self._log(f"⚠️ {w}")
-                self._log(f"期初余额：{len(opening_df)} 行（清洗后）")
 
             # 加载并清洗序时账
             journal_df = self._state.get("journal_df")
@@ -203,7 +208,6 @@ class StepResult(ctk.CTkFrame):
                 return
 
             journal_df = self._loader.apply_mapping(journal_df, self._state.get("journal_mapping", {}))
-            journal_df = self._loader.clean(journal_df, key_column="科目编码")
             journal_df, journal_warnings = self._loader.convert_types(
                 journal_df,
                 amount_columns=["借方金额", "贷方金额"],
@@ -211,7 +215,31 @@ class StepResult(ctk.CTkFrame):
             )
             for w in journal_warnings:
                 self._log(f"⚠️ {w}")
-            self._log(f"序时账：{len(journal_df)} 行（清洗后）")
+
+            opening_result = filter_current_accounts(
+                opening_df,
+                data_kind="opening",
+                source_label=f"期初余额/{self._state.get('opening_sheet') or '(无期初)'}",
+            )
+            journal_result = filter_current_accounts(
+                journal_df,
+                data_kind="journal",
+                source_label=f"序时账/{self._state.get('journal_sheet') or '(未选择)'}",
+            )
+            for title, filter_result in (("期初余额", opening_result), ("序时账", journal_result)):
+                self._log(f"--- {title}过滤结果 ---")
+                for line in format_filter_summary(filter_result).splitlines():
+                    self._log(line)
+                for warning in filter_result.warnings:
+                    self._log(f"⚠️ {warning}")
+
+            conflicts = find_category_conflicts([opening_result, journal_result])
+            if conflicts:
+                raise ValueError(format_category_conflicts(conflicts))
+            if opening_result.retained_rows + journal_result.retained_rows == 0:
+                raise ValueError("所选数据中未识别到八类往来")
+            opening_df = opening_result.dataframe
+            journal_df = journal_result.dataframe
 
             # 批量计算
             def on_progress(current: int, total: int) -> None:
@@ -224,7 +252,6 @@ class StepResult(ctk.CTkFrame):
             orch = AgingOrchestrator(
                 cutoff_date=self._state["cutoff_date"],
                 buckets=self._state["buckets"],
-                direction=self._state["direction"],
                 on_progress=on_progress,
                 opening_date=opening_date,
                 opening_aging_columns=opening_aging_columns,
@@ -305,13 +332,13 @@ class StepResult(ctk.CTkFrame):
                 config={
                     "cutoff_date": self._state["cutoff_date"],
                     "buckets": self._state["buckets"],
-                    "direction": self._state["direction"],
-                    "bucket_labels": self._state.get("bucket_labels", []),
+                    "bucket_labels": self._state.get("bucket_labels"),
                     "opening_date": self._state.get("opening_date"),
                     "aging_mode": "分档模式" if self._state.get("opening_aging_columns") else "铁板模式",
                     "bucket_boundary_rule": "边界点归前档",
                     "fifo_policy": "先进先出法 (收付款按最老余额优先核销)",
-                    "negative_balance_policy": "负余额单列展示，不并入正常账龄分档",
+                    "direction_policy": "八类往来按科目类别固定方向",
+                    "negative_balance_policy": "反向余额以负数单列展示，不改变科目所属汇总表",
                 },
             )
             self._msg_queue.put(("export_done", path))

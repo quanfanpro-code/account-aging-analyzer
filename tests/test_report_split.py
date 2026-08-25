@@ -26,8 +26,7 @@ def test_报告分借贷两个sheet():
     gen.generate(output, results, {
         "cutoff_date": "2025-06-01",
         "buckets": [(0, 365)],
-        "direction": "debit",
-        "bucket_labels": [],
+        "bucket_labels": ["1年以内"],
     })
     wb = load_workbook(output)
     assert "借方账龄汇总表" in wb.sheetnames
@@ -57,3 +56,26 @@ def test_报告分借贷两个sheet():
     assert not found_1122_c
     # 清理
     os.remove(output)
+
+
+def test_无数据方向仍生成工作表和提示行(tmp_path):
+    result = AgingResult(
+        subject_code="1122", subject_name="应收账款",
+        detail_name="客户A", direction="debit",
+        opening_balance=100.0, total_debit=0.0, total_credit=0.0,
+        closing_balance=100.0, bucket_totals=[100.0],
+    )
+    output = tmp_path / "无贷方数据.xlsx"
+    ReportGenerator().generate(output, [result], {
+        "cutoff_date": "2025-06-01",
+        "buckets": [(0, 365)],
+        "bucket_labels": ["1年以内"],
+    })
+    workbook = load_workbook(output)
+    assert "借方账龄汇总表" in workbook.sheetnames
+    assert "贷方账龄汇总表" in workbook.sheetnames
+    assert any(
+        cell.value == "无数据"
+        for row in workbook["贷方账龄汇总表"].iter_rows()
+        for cell in row
+    )

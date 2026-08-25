@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 import pandas as pd
 from src.core.orchestrator import AgingOrchestrator
+from src.core.current_accounts import filter_current_accounts
 
 
 def test_借贷混合一次算完():
@@ -40,8 +41,7 @@ def test_借贷混合一次算完():
     assert r1.closing_balance == pytest.approx(900.0)  # 800+300-200
 
 
-def test_反挂科目余额方向自动识别():
-    """预收挂在应收编码下，余额方向能纠正为贷方"""
+def test_应收账款反向余额仍留在借方类():
     opening_df = pd.DataFrame({
         "科目编码": ["1122"],
         "科目名称": ["应收账款"],
@@ -64,7 +64,51 @@ def test_反挂科目余额方向自动识别():
     )
     results = orch.run(opening_df, journal_df)
     assert len(results) == 1
-    # 余额方向：贷方500 > 借方100 -> 贷方口径
-    assert results[0].direction == "credit"
-    # 贷方口径：期初(贷-借=400) + 贷200 - 借0 = 600
-    assert results[0].closing_balance == pytest.approx(600.0)
+    assert results[0].direction == "debit"
+    assert results[0].closing_balance == pytest.approx(-600.0)
+    assert results[0].negative_balance == pytest.approx(-600.0)
+
+
+def test_合同资产和合同负债一次算完():
+    opening_df = pd.DataFrame({
+        "科目编码": ["1486", "2204"],
+        "科目名称": ["合同资产", "合同负债"],
+        "明细名称": ["客户A", "客户B"],
+        "借方余额": [300.0, 0.0],
+        "贷方余额": [0.0, 500.0],
+    })
+    journal_df = pd.DataFrame(columns=[
+        "日期", "科目编码", "科目名称", "明细名称", "借方金额", "贷方金额", "摘要",
+    ])
+    results = AgingOrchestrator(
+        cutoff_date=date(2025, 6, 1), buckets=[(0, 365)],
+    ).run(opening_df, journal_df)
+    assert {result.subject_name: result.direction for result in results} == {
+        "合同资产": "debit", "合同负债": "credit",
+    }
+
+
+def test_科目编码为空时不同往来类别不会混成一组():
+    opening = pd.DataFrame({
+        "科目编码": [None, None],
+        "科目名称": ["应收账款", "应付账款"],
+        "明细名称": ["同一单位", "同一单位"],
+        "借方余额": [100.0, 0.0],
+        "贷方余额": [0.0, 200.0],
+    })
+    journal = pd.DataFrame(columns=[
+        "日期", "科目编码", "科目名称", "明细名称", "借方金额", "贷方金额", "摘要",
+    ])
+    opening_filtered = filter_current_accounts(
+        opening, data_kind="opening", source_label="期初余额/期初",
+    ).dataframe
+    journal_filtered = filter_current_accounts(
+        journal, data_kind="journal", source_label="序时账/序时账",
+    ).dataframe
+    results = AgingOrchestrator(
+        cutoff_date=date(2025, 6, 1), buckets=[(0, 365)],
+    ).run(opening_filtered, journal_filtered)
+    assert len(results) == 2
+    assert {result.subject_name: result.direction for result in results} == {
+        "应收账款": "debit", "应付账款": "credit",
+    }

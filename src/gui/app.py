@@ -29,13 +29,20 @@ class MainWindow(ctk.CTk):
         self._shared_state: dict = {
             "opening_path": None,       # 期初余额文件路径
             "journal_path": None,       # 序时账文件路径
+            "opening_sheet_names": [],  # 期初余额工作表列表
+            "journal_sheet_names": [],  # 序时账工作表列表
+            "opening_sheet": None,      # 用户选定的期初余额工作表
+            "journal_sheet": None,      # 用户选定的序时账工作表
+            "opening_request_id": 0,    # 防止旧读取结果覆盖新选择
+            "journal_request_id": 0,
+            "opening_filter_summary": "",
+            "journal_filter_summary": "",
             "opening_mapping": {},      # 期初余额列映射
             "journal_mapping": {},      # 序时账列映射
             "opening_df": None,         # 期初余额 DataFrame
             "journal_df": None,         # 序时账 DataFrame
             "buckets": [(0, 90), (90, 180), (180, 365), (365, 730), (730, 9999)],
             "cutoff_date": None,
-            "direction": "debit",
             "aging_results": [],
             "is_computing": False,
             "is_exporting": False,

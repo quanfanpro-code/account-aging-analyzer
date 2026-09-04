@@ -182,6 +182,10 @@ class ReportGenerator:
                 "negative_balance_policy",
                 "反向余额以负数单列展示，不改变科目所属汇总表",
             )),
+            ("未填明细提示", config.get(
+                "blank_detail_policy",
+                "归入（未填明细）的记录可能混合多个对手方，借贷互相核销后账龄结构可能失真，需人工评估",
+            )),
         ]
         return pd.DataFrame(rows, columns=["参数", "值"])
 

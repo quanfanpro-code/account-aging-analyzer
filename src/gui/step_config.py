@@ -189,6 +189,9 @@ class StepConfig(ctk.CTkFrame):
     def _add_bucket(self) -> None:
         """新增一个分档"""
         buckets = self._read_buckets_from_ui()
+        if self._invalid_bucket_rows:
+            messagebox.showwarning("无法新增", "存在填的不是数字的分档行，请先修正再新增，避免错位")
+            return
         labels = self._read_labels_from_ui()
         if buckets:
             last_hi = buckets[-1][1]
@@ -203,6 +206,9 @@ class StepConfig(ctk.CTkFrame):
     def _delete_bucket(self, index: int) -> None:
         """删除指定分档"""
         buckets = self._read_buckets_from_ui()
+        if self._invalid_bucket_rows:
+            messagebox.showwarning("无法删除", "存在填的不是数字的分档行，请先修正再删除，避免删错档")
+            return
         labels = self._read_labels_from_ui()
         if len(buckets) <= 1:
             messagebox.showwarning("无法删除", "至少保留一个分档")

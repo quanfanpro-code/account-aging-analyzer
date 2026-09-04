@@ -356,7 +356,6 @@ python -m pytest tests/ -v
 │   │   ├── fifo_engine.py         ← 先进先出引擎
 │   │   ├── orchestrator.py        ← 批量调度
 │   │   ├── direction_resolver.py  ← 八类往来固定方向兼容入口
-│   │   ├── journal_merger.py      ← 历史多文件合并模块（当前界面不调用）
 │   │   └── report.py              ← 审计底稿生成
 │   ├── gui/                       ← 界面
 │   │   ├── app.py                 ← 主窗口
@@ -367,14 +366,19 @@ python -m pytest tests/ -v
 └── tests/                         ← 自动化测试
     ├── test_models.py
     ├── test_column_mapper.py
+    ├── test_current_accounts.py
     ├── test_data_loader.py
-    ├── test_fifo_engine.py
-    ├── test_orchestrator.py
     ├── test_direction_resolver.py
+    ├── test_end_to_end_current_accounts.py
+    ├── test_fifo_engine.py
+    ├── test_make_excel.py
+    ├── test_orchestrator.py
     ├── test_orchestrator_mixed.py
-    ├── test_journal_merger.py
+    ├── test_orchestrator_no_opening.py
+    ├── test_report.py
     ├── test_report_split.py
-    └── test_report.py
+    ├── test_step_config_rules.py
+    └── test_step_import_state.py
 ```
 
 ---
@@ -382,6 +386,18 @@ python -m pytest tests/ -v
 ## 📋 开发日志
 
 > 注：下面较早日期的日志保留的是当时版本状态，若与当前行为有出入，以本文前面的功能说明和最新一轮日志为准。
+
+### 2026-09-04：独立复核后的修复与死代码清理
+
+- 列映射和工作表下拉改为只选不输，杜绝手输不存在的列名绕过必填校验
+- 导出底稿“参数说明”新增“未填明细提示”：归入（未填明细）的记录可能混合多个对手方，账龄需人工评估
+- 导入页后台读取改为队列加主线程消息泵，与计算页线程模型统一
+- 导出金额格式修正：0 到 1 的小额浮点（如万元单位）不再被误判为百分比格式
+- 分档存在非法输入行时，新增和删除分档会先提示修正，避免删错档
+- 删除已无调用的序时账多文件合并模块及其测试（需求口径：不支持多文件合并）
+- 清理 8 月 3 日旧口径的集成验证产物文件
+
+**测试结果**：136 个自动化测试全部通过，两个集成验证脚本全部通过。
 
 ### 2026-08-25：八类往来全自动化与多 Sheet 手动选择
 

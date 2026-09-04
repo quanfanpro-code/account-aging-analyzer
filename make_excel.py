@@ -89,11 +89,8 @@ def _infer_column_type(name: str, series: pd.Series) -> str:
             return 'date'
 
         if pd.api.types.is_numeric_dtype(clean):
-            sample = clean.head(20)
-            if pd.api.types.is_float_dtype(sample):
-                # 0~1 之间的浮点 → 百分比
-                if (sample >= 0).all() and (sample <= 1).all() and sample.nunique() > 2:
-                    return 'pct'
+            # 浮点一律按金额：0~1 的小额数据（如万元单位）不能误判为百分比
+            if pd.api.types.is_float_dtype(clean.head(20)):
                 return 'money'
             return 'number'
 

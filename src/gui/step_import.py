@@ -3,6 +3,7 @@
 from __future__ import annotations
 import customtkinter as ctk
 import pandas as pd
+import queue
 import threading
 from tkinter import filedialog, messagebox
 
@@ -72,6 +73,10 @@ class StepImport(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._state = state
         self._loader = DataLoader()
+
+        # 后台读取线程只往队列塞消息，主线程用 after 泵统一消费（与步骤 3 同一模式，线程安全）
+        self._msg_queue: queue.Queue = queue.Queue()
+        self.after(100, self._poll_queue)
 
         # 两个列映射器
         self._opening_mapper = ColumnMapper()
@@ -230,9 +235,9 @@ class StepImport(ctk.CTkFrame):
         try:
             sheet_names = self._loader.list_sheet_names(path)
         except Exception as e:
-            self.after(0, lambda err=str(e): self._on_load_failed(card, request_id, err))
+            self._msg_queue.put(("load_failed", (card, request_id, str(e))))
             return
-        self.after(0, lambda: self._on_sheet_names_success(card, request_id, sheet_names))
+        self._msg_queue.put(("sheet_names", (card, request_id, sheet_names)))
 
     def _on_sheet_names_success(self, card: Card, request_id: int, sheet_names: list[str]) -> None:
         if not is_current_source_request(self._state, card._prefix, request_id):
@@ -241,7 +246,7 @@ class StepImport(ctk.CTkFrame):
         if not sheet_names:
             self._on_load_failed(card, request_id, "工作簿中没有可读取的工作表")
             return
-        card._sheet_combo.configure(values=sheet_names, state="normal")
+        card._sheet_combo.configure(values=sheet_names, state="readonly")  # 只选不输，避免手输不存在的工作表名
         initial = self._loader.initial_sheet(sheet_names)
         if initial is None:
             card._sheet_var.set("请选择工作表")
@@ -274,9 +279,25 @@ class StepImport(ctk.CTkFrame):
         try:
             df = self._loader.load_sheet(path, sheet_name)
         except Exception as e:
-            self.after(0, lambda err=str(e): self._on_load_failed(card, request_id, err))
+            self._msg_queue.put(("load_failed", (card, request_id, str(e))))
             return
-        self.after(0, lambda: self._on_load_success(card, request_id, df))
+        self._msg_queue.put(("load_success", (card, request_id, df)))
+
+    def _poll_queue(self) -> None:
+        """主线程消息泵：消费后台读取线程塞进来的界面更新"""
+        try:
+            while True:
+                kind, payload = self._msg_queue.get_nowait()
+                card, request_id, data = payload
+                if kind == "sheet_names":
+                    self._on_sheet_names_success(card, request_id, data)
+                elif kind == "load_success":
+                    self._on_load_success(card, request_id, data)
+                elif kind == "load_failed":
+                    self._on_load_failed(card, request_id, data)
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_queue)
 
     def _on_load_failed(self, card: Card, request_id: int, err: str) -> None:
         """读取失败（主线程）"""
@@ -437,7 +458,8 @@ class StepImport(ctk.CTkFrame):
             lbl.grid(row=row_idx, column=0, padx=(0, 8), pady=2, sticky="w")
 
             var = ctk.StringVar(value=mapped_col if mapped_col else "(未映射)")
-            combo = ctk.CTkComboBox(mf, values=columns_with_none, variable=var, width=180)
+            combo = ctk.CTkComboBox(mf, values=columns_with_none, variable=var, width=180,
+                                    state="readonly")  # 只读：手输不存在的列名会架空必填校验
             combo.grid(row=row_idx, column=1, padx=(0, 4), pady=2, sticky="w")
 
             # 保存引用以便后续获取值

@@ -7,7 +7,7 @@ from src.core.fifo_engine import FIFOEngine
 from src.core.report import ReportGenerator
 
 
-def test_生成Excel_包含六个Sheet(tmp_path):
+def test_生成Excel_包含七个Sheet(tmp_path):
     engine = FIFOEngine(
         cutoff_date=date(2025, 6, 1),
         buckets=[(0, 365), (365, 730)],
@@ -31,10 +31,12 @@ def test_生成Excel_包含六个Sheet(tmp_path):
     wb = openpyxl.load_workbook(output)
     assert "借方账龄汇总表" in wb.sheetnames
     assert "贷方账龄汇总表" in wb.sheetnames
+    assert "成对对抵后账龄" in wb.sheetnames
     assert "逐笔追溯明细" in wb.sheetnames
     assert "期初余额验证" in wb.sheetnames
     assert "期末余额验证" in wb.sheetnames
     assert "参数说明" in wb.sheetnames
+    assert len(wb.sheetnames) == 7
 
 
 def test_账龄汇总表_含合计行(tmp_path):

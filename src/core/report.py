@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """生成深海蓝标准格式审计底稿"""
 from __future__ import annotations
+from collections import defaultdict
 from pathlib import Path
 from typing import Union
 
@@ -10,13 +11,21 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from make_excel import make_excel
+from src.core.current_accounts import BLANK_DETAIL, classify_current_account
 from src.core.models import AgingResult
 
 PathLike = Union[str, Path]
 
+PAIRED_ACCOUNTS = (
+    ("应收账款", "预收账款"),
+    ("预付账款", "应付账款"),
+    ("其他应收款", "其他应付款"),
+    ("合同资产", "合同负债"),
+)
+
 
 class ReportGenerator:
-    """生成 6-Sheet 审计底稿 Excel（deep-navy 摩根系标准）"""
+    """生成账龄审计底稿 Excel（含截止日后的成对对抵展示）。"""
 
     def generate(
         self,
@@ -28,10 +37,11 @@ class ReportGenerator:
         debit_results = [r for r in aging_results if r.direction == "debit"]
         credit_results = [r for r in aging_results if r.direction == "credit"]
 
-        # ── 构建 6 个 Sheet 的 DataFrame ──
+        # 原账龄结果保留；成对对抵仅在截止日结果生成后用于展示。
         sheets = [
             ('借方账龄汇总表', self._build_summary(debit_results, config)),
             ('贷方账龄汇总表', self._build_summary(credit_results, config)),
+            ('成对对抵后账龄', self._build_paired_offset(aging_results, config)),
             ('逐笔追溯明细', self._build_entries(aging_results, config)),
             ('期初余额验证', self._build_opening_check(aging_results)),
             ('期末余额验证', self._build_closing_check(aging_results)),
@@ -79,6 +89,71 @@ class ReportGenerator:
             placeholder.append(0.0)
             rows.append(placeholder)
 
+        return pd.DataFrame(rows, columns=headers)
+
+    def _build_paired_offset(self, results: list[AgingResult], config: dict) -> pd.DataFrame:
+        """按同一单位和成对科目展示净额；对抵额先冲减较老的剩余账龄。"""
+        labels = self._get_bucket_labels(config)
+        headers = [
+            "往来组合", "明细名称", "资产侧科目", "负债侧科目", "资产侧期末余额",
+            "负债侧期末余额", "对抵金额", "对抵后方向", "对抵后余额",
+            *labels, "分档勾稽差异", "处理状态",
+        ]
+        category_side = {
+            category: (pair_index, side)
+            for pair_index, pair in enumerate(PAIRED_ACCOUNTS)
+            for side, category in enumerate(pair)
+        }
+        grouped: dict[tuple[int, str], list[list[AgingResult]]] = defaultdict(lambda: [[], []])
+        for result in results:
+            match = classify_current_account(result.subject_code, result.subject_name)
+            if match.category not in category_side:
+                continue
+            pair_index, side = category_side[match.category]
+            grouped[(pair_index, result.detail_name)][side].append(result)
+
+        rows = []
+        for (pair_index, detail), (asset_results, liability_results) in sorted(grouped.items()):
+            asset_name, liability_name = PAIRED_ACCOUNTS[pair_index]
+            asset_amount = round(sum(r.closing_balance for r in asset_results), 2)
+            liability_amount = round(sum(r.closing_balance for r in liability_results), 2)
+            source_results = asset_results + liability_results
+            can_offset = (
+                detail != BLANK_DETAIL
+                and bool(str(detail).strip())
+                and all(r.closing_balance >= -0.005 for r in source_results)
+                and all(len(r.bucket_totals) == len(labels) for r in source_results)
+                and all(abs(sum(r.bucket_totals) - r.closing_balance) < 0.01 for r in source_results)
+            )
+            if not can_offset:
+                status = "未填明细，未自动对抵" if detail == BLANK_DETAIL or not str(detail).strip() else "反向余额或分档待核对，未自动对抵"
+                rows.append([
+                    f"{asset_name}↔{liability_name}", detail, asset_name, liability_name,
+                    asset_amount, liability_amount, 0.0, "待核对", None,
+                    *([None] * len(labels)), None, status,
+                ])
+                continue
+
+            offset = round(min(asset_amount, liability_amount), 2)
+            net = round(asset_amount - liability_amount, 2)
+            if abs(net) < 0.005:
+                direction, balance, buckets = "结清", 0.0, [0.0] * len(labels)
+            else:
+                remaining_results = asset_results if net > 0 else liability_results
+                direction = "借方" if net > 0 else "贷方"
+                balance = abs(net)
+                buckets = [round(sum(r.bucket_totals[i] for r in remaining_results), 2) for i in range(len(labels))]
+                to_offset = offset
+                for i in range(len(buckets) - 1, -1, -1):
+                    consumed = min(buckets[i], to_offset)
+                    buckets[i] = round(buckets[i] - consumed, 2)
+                    to_offset = round(to_offset - consumed, 2)
+            rows.append([
+                f"{asset_name}↔{liability_name}", detail, asset_name, liability_name,
+                asset_amount, liability_amount, offset, direction, balance,
+                *buckets, round(sum(buckets) - balance, 2),
+                "已对抵" if offset else ("无期末余额" if balance == 0 else "单侧余额"),
+            ])
         return pd.DataFrame(rows, columns=headers)
 
     def _patch_summary_formulas(self, output_path: PathLike,
@@ -182,6 +257,7 @@ class ReportGenerator:
                 "negative_balance_policy",
                 "反向余额以负数单列展示，不改变科目所属汇总表",
             )),
+            ("成对对抵", "截至日各科目账龄算完后，同一单位的成对科目在展示中对抵；先冲减较老的剩余账龄，不改原始账龄结果"),
             ("未填明细提示", config.get(
                 "blank_detail_policy",
                 "归入（未填明细）的记录可能混合多个对手方，借贷互相核销后账龄结构可能失真，需人工评估",

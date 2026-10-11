@@ -215,7 +215,6 @@ class AgingOrchestrator:
                     "摘要": str(row.get("摘要", "")),
                     "_转科目借方": float(row.get("_转科目借方", 0)),
                     "_转科目贷方": float(row.get("_转科目贷方", 0)),
-                    "_业务单号": str(row.get("_业务单号", "")),
                 }
                 for _, row in txn_df.iterrows()
             ]

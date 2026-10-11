@@ -96,7 +96,7 @@ class FIFOEngine:
                 if increase_amount > 0:
                     positive_layers.append({
                         "kind": "txn",
-                        "source": txn["date"].isoformat() + (" / " + txn['_业务单号'] if txn.get('_业务单号') else ""),
+                        "source": txn["date"].isoformat(),
                         "source_date": txn["date"],
                         "amount": increase_amount,
                     })

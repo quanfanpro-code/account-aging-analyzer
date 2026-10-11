@@ -6,7 +6,7 @@ from src.core.preflight import detect,confirmed_aliases,text
 from src.core.current_accounts import ACCOUNT_RULES,CATEGORIES,CATEGORY_COLUMN,DIRECTION_COLUMN,BLANK_DETAIL,temporary_account_name,temporary_account_scope,filter_current_accounts
 from src.core.orchestrator import AgingOrchestrator
 from src.core.fifo_engine import FIFOEngine
-from src.core.temporary_transfers import attach_business_ids,mark_transfers
+from src.core.temporary_transfers import mark_transfers
 
 PAIRS=(('应收账款','预收账款'),('预付账款','应付账款'),('其他应收款','其他应付款'),('合同资产','合同负债'))
 RULES={name:(code,direction) for name,code,direction in ACCOUNT_RULES}
@@ -46,7 +46,7 @@ class AgingWorkflow:
                 selected.loc[index,['科目编码','科目名称',CATEGORY_COLUMN,DIRECTION_COLUMN]]=[code,category,category,direction]
                 selected.loc[index,'明细名称']=aliases.get(row['明细名称'],row['明细名称'])
             return selected.drop(index=drop)
-        self.opening_input=prepare(opening,'opening');self.journal_input=prepare(attach_business_ids(journal,aliases),'journal')
+        self.opening_input=prepare(opening,'opening');self.journal_input=prepare(journal,'journal')
         self.journal_input,self.transfer_records=mark_transfers(self.journal_input,self.cutoff_date)
         orch=AgingOrchestrator(self.cutoff_date,self.buckets,opening_date=self.opening_date,opening_aging_columns=self.opening_aging_columns,on_progress=self.on_progress)
         source=orch.run(self.opening_input,self.journal_input)
@@ -56,7 +56,7 @@ class AgingWorkflow:
             if r.closing_balance>=-.005:positive.append(r);continue
             target=OPPOSITE[r.subject_name];code,direction=RULES[target]
             txn=self.journal_input[(self.journal_input['科目编码']==r.subject_code)&(self.journal_input['明细名称']==r.detail_name)]
-            transactions=[{'date':x['日期'].date() if hasattr(x['日期'],'date') else x['日期'],'debit':float(x['借方金额'] or 0),'credit':float(x['贷方金额'] or 0),'_转科目借方':x.get('_转科目借方',0),'_转科目贷方':x.get('_转科目贷方',0),'_业务单号':text(x.get('_业务单号'))} for _,x in txn.iterrows() if pd.notna(x['日期']) and (x['日期'].date() if hasattr(x['日期'],'date') else x['日期'])<=self.cutoff_date]
+            transactions=[{'date':x['日期'].date() if hasattr(x['日期'],'date') else x['日期'],'debit':float(x['借方金额'] or 0),'credit':float(x['贷方金额'] or 0),'_转科目借方':x.get('_转科目借方',0),'_转科目贷方':x.get('_转科目贷方',0)} for _,x in txn.iterrows() if pd.notna(x['日期']) and (x['日期'].date() if hasattr(x['日期'],'date') else x['日期'])<=self.cutoff_date]
             opening_buckets=[-x for x in r.opening_bucket_totals] if r.opening_balance<0 and r.opening_bucket_totals else None
             ranges=[k for k in sorted(self.opening_aging_columns)] if opening_buckets else None
             converted=FIFOEngine(self.cutoff_date,self.buckets,direction).calculate(code,target,r.detail_name,-r.opening_balance,transactions,opening_buckets=opening_buckets,opening_date=self.opening_date,opening_bucket_ranges=ranges)

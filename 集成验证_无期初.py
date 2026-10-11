@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import date
 from pathlib import Path
 
-from src.core.orchestrator import AgingOrchestrator
+from src.core.workflow import AgingWorkflow
 from src.core.report import ReportGenerator
 
 BASE = Path(__file__).parent
@@ -27,7 +27,7 @@ journal_df = pd.DataFrame({
 cutoff = date(2025, 6, 1)
 buckets = [(0, 365), (365, 9999)]
 
-orch = AgingOrchestrator(cutoff_date=cutoff, buckets=buckets, direction="debit")
+orch = AgingWorkflow(cutoff_date=cutoff, buckets=buckets)
 results = orch.run(opening_df, journal_df)
 
 assert len(results) == 1, f"明细数应为 1，实际 {len(results)}"

@@ -74,14 +74,16 @@ def test_空明细及反向余额不自动对抵():
     assert frame["对抵后余额"].isna().all()
 
 
-def test_导出增加对抵表且原汇总保留(tmp_path):
-    asset = result("1122", "应收账款", "单位A", "debit", 100.0, [40.0, 60.0])
-    liability = result("2203", "预收账款", "单位A", "credit", 30.0, [30.0, 0.0])
-    target = tmp_path / "成对对抵.xlsx"
-    ReportGenerator().generate(target, [asset, liability], CONFIG)
-    wb = load_workbook(target, read_only=True, data_only=True)
-    assert "成对对抵后账龄" in wb.sheetnames
-    assert wb["成对对抵后账龄"]["H2"].value == 30.0  # G 为负债余额，H 为对抵额
-    assert wb["借方账龄汇总表"]["E2"].value == 40.0
-    assert wb["贷方账龄汇总表"]["E2"].value == 30.0
+def test_对抵直接进入唯一最终结果_依据单独留痕(tmp_path):
+    from dataclasses import replace
+    asset=result('1122','应收账款','单位A','debit',100,[40,60])
+    liability=result('2203','预收账款','单位A','credit',30,[30,0])
+    final=replace(asset,closing_balance=70,bucket_totals=[40,30])
+    target=tmp_path/'最终账龄.xlsx'
+    ReportGenerator().generate(target,[final],{**CONFIG,'source_results':[asset,liability],'offset_records':[{'往来组合':'应收账款 / 预收账款','单位':'单位A','资产侧余额':100,'负债侧余额':30,'对抵金额':30,'最终借方净额':70}]})
+    wb=load_workbook(target,data_only=True)
+    assert wb['账龄计算结果']['G2'].value==70
+    assert wb['账龄计算结果']['E2'].value==40 and wb['账龄计算结果']['F2'].value==30
+    assert wb['对抵记录']['F2'].value==30
+    assert '成对对抵后账龄' not in wb.sheetnames
     wb.close()

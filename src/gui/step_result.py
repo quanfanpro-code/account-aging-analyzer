@@ -11,7 +11,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 from src.gui.widgets import Card, make_button
-from src.core.orchestrator import AgingOrchestrator
+from src.core.workflow import AgingWorkflow
+from src.gui.confirmation_dialog import ConfirmationDialog
 from src.core.report import ReportGenerator
 from src.core.data_loader import DataLoader
 from src.core.current_accounts import (
@@ -56,6 +57,7 @@ class StepResult(ctk.CTkFrame):
         """清除旧计算结果（当用户返回前序步骤修改数据/参数时调用）"""
         self._results = []
         self._state["aging_results"] = []
+        self._state.pop('calculation_trace', None)
         self._btn_export.configure(state="disabled")
         self._export_status.configure(
             text="（参数已变更，请重新计算）",
@@ -143,6 +145,13 @@ class StepResult(ctk.CTkFrame):
                     )
                 elif kind == "stats":
                     self._stats_label.configure(text=payload)
+                elif kind == "confirmation":
+                    pending, event, answer = payload
+                    self._status_label.configure(text="等待计算前确认")
+                    def complete(decisions, answer=answer, event=event):
+                        answer['decisions'] = decisions
+                        event.set()
+                    ConfirmationDialog(self, pending, complete, self._state.get('confirmation_decisions'))
                 elif kind == "calc_done":
                     self._on_calc_done(payload)
                 elif kind == "calc_error":
@@ -184,7 +193,7 @@ class StepResult(ctk.CTkFrame):
             self._log("===== 开始往来账款账龄分析 =====")
             self._log(f"截止日期: {self._state['cutoff_date']}")
             self._log(f"账龄分档: {self._state['buckets']}")
-            self._log("方向口径: 八类往来按科目类别固定方向")
+            self._log("处理口径: 计算前确认、反向余额自动重分类、成对对抵后输出唯一最终账龄")
             self._log(f"期初模式: {'分档模式' if self._state.get('opening_aging_columns') else '铁板模式'}")
 
             # 加载并清洗期初余额（可选：不选时按空表、期初视为 0）
@@ -238,8 +247,40 @@ class StepResult(ctk.CTkFrame):
                 raise ValueError(format_category_conflicts(conflicts))
             if opening_result.retained_rows + journal_result.retained_rows == 0:
                 raise ValueError("所选数据中未识别到八类往来")
-            opening_df = opening_result.dataframe
-            journal_df = journal_result.dataframe
+            opening_df = opening_df.copy()
+            journal_df = journal_df.copy()
+            opening_df['_来源工作表'] = f"{self._state.get('opening_path') or '(无期初)'} | {self._state.get('opening_sheet') or ''}"
+            journal_df['_来源工作表'] = f"{self._state.get('journal_path') or ''} | {self._state.get('journal_sheet') or ''}"
+            pending = AgingWorkflow.preflight(opening_df, journal_df)
+            input_signature = (
+                id(self._state.get('opening_df')), id(self._state.get('journal_df')),
+                self._state.get('opening_sheet'), self._state.get('journal_sheet'),
+                tuple(sorted(self._state.get('opening_mapping', {}).items())),
+                tuple(sorted(self._state.get('journal_mapping', {}).items())),
+            )
+            if self._state.get('confirmation_input_signature') != input_signature:
+                self._state.pop('confirmation_decisions', None)
+            decisions = {'temporary': {}, 'names': {}}
+            cached = self._state.get('confirmation_decisions', {})
+            cache_complete = (
+                all(x.code in cached.get('temporary', {}) for x in pending.temporary)
+                and all(x.key in cached.get('names', {}) for x in pending.names)
+            )
+            if cached and cache_complete:
+                decisions = cached
+                self._log('同一批资料复用已确认的科目归属及名称关系')
+            elif pending.temporary or pending.names:
+                event = threading.Event()
+                answer = {}
+                self._msg_queue.put(('confirmation', (pending, event, answer)))
+                event.wait()
+                decisions = answer.get('decisions')
+                if decisions is None:
+                    self._log('用户取消计算前确认，本次未执行账龄计算')
+                    self._msg_queue.put(('calc_done', False))
+                    return
+                self._state['confirmation_decisions'] = decisions
+                self._state['confirmation_input_signature'] = input_signature
 
             # 批量计算
             def on_progress(current: int, total: int) -> None:
@@ -249,7 +290,7 @@ class StepResult(ctk.CTkFrame):
             opening_aging_columns = self._state.get("opening_aging_columns", {})
             opening_date = self._state.get("opening_date")
 
-            orch = AgingOrchestrator(
+            orch = AgingWorkflow(
                 cutoff_date=self._state["cutoff_date"],
                 buckets=self._state["buckets"],
                 on_progress=on_progress,
@@ -258,7 +299,16 @@ class StepResult(ctk.CTkFrame):
             )
 
             self._log("开始 FIFO 账龄计算...")
-            results = orch.run(opening_df, journal_df)
+            results = orch.run(opening_df, journal_df,
+                temporary_assignments=decisions['temporary'], name_decisions=decisions['names'])
+            self._state['calculation_trace'] = {
+                'source_results': orch.source_results,
+                'confirmation_records': orch.confirmation_records,
+                'reclassification_records': orch.reclassification_records,
+                'offset_records': orch.offset_records,
+                'opening_source': orch.opening_input,
+                'journal_source': orch.journal_input,
+            }
             for warning in getattr(orch, "last_warnings", []):
                 self._log(f"⚠️ {warning}")
             self._log(f"✅ 计算完成！共 {len(results)} 个账龄明细")
@@ -268,14 +318,15 @@ class StepResult(ctk.CTkFrame):
                 self._log(f"  {log_line}")
 
             # 统计
-            total_balance = sum(r.closing_balance for r in results)
-            self._log(f"期末余额合计: {total_balance:,.2f}")
+            assets = sum(r.closing_balance for r in results if r.direction == 'debit')
+            liabilities = sum(r.closing_balance for r in results if r.direction == 'credit')
+            self._log(f"最终资产类余额: {assets:,.2f}；最终负债类余额: {liabilities:,.2f}")
 
             self._state["aging_results"] = results
             self._results = results
 
             # 更新统计标签
-            stats_text = f"明细数: {len(results)}  |  期末余额合计: {total_balance:,.2f}"
+            stats_text = f"明细数: {len(results)}\n资产: {assets:,.2f}\n负债: {liabilities:,.2f}"
             self._msg_queue.put(("stats", stats_text))
 
             self._msg_queue.put(("calc_done", True))
@@ -302,7 +353,7 @@ class StepResult(ctk.CTkFrame):
 
     def _export_excel(self) -> None:
         """导出 Excel 审计底稿"""
-        if not self._results:
+        if not self._results and not self._state.get('calculation_trace'):
             messagebox.showwarning("无数据", "请先完成计算再导出")
             return
 
@@ -337,8 +388,9 @@ class StepResult(ctk.CTkFrame):
                     "aging_mode": "分档模式" if self._state.get("opening_aging_columns") else "铁板模式",
                     "bucket_boundary_rule": "边界点归前档",
                     "fifo_policy": "先进先出法 (收付款按最老余额优先核销)",
-                    "direction_policy": "八类往来按科目类别固定方向",
-                    "negative_balance_policy": "反向余额以负数单列展示，不改变科目所属汇总表",
+                    "direction_policy": "反向余额自动转入成对科目，按转入方向追溯账龄",
+                    "negative_balance_policy": "反向余额自动重分类，并保留重分类记录",
+                    **self._state.get('calculation_trace', {}),
                 },
             )
             self._msg_queue.put(("export_done", path))

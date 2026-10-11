@@ -33,24 +33,44 @@ class ReportGenerator:
         aging_results: list[AgingResult],
         config: dict,
     ) -> None:
-        # 按方向分两组
-        debit_results = [r for r in aging_results if r.direction == "debit"]
-        credit_results = [r for r in aging_results if r.direction == "credit"]
+        make_excel(self.build_frames(aging_results, config), output_path)
 
-        # 原账龄结果保留；成对对抵仅在截止日结果生成后用于展示。
+    def build_frames(self, aging_results: list[AgingResult], config: dict):
+        """结果页只有最终账龄；其他页保存计算依据，不再输出并列账龄。"""
+        source = config.get('source_results', aging_results)
         sheets = [
-            ('借方账龄汇总表', self._build_summary(debit_results, config)),
-            ('贷方账龄汇总表', self._build_summary(credit_results, config)),
-            ('成对对抵后账龄', self._build_paired_offset(aging_results, config)),
+            ('账龄计算结果', self._build_final_summary(aging_results, config)),
             ('逐笔追溯明细', self._build_entries(aging_results, config)),
-            ('期初余额验证', self._build_opening_check(aging_results)),
-            ('期末余额验证', self._build_closing_check(aging_results)),
-            ('参数说明', self._build_config(config)),
+            ('原账勾稽', self._build_closing_check(source).drop(columns=['分档合计+负余额','勾稽差异'])),
         ]
+        for title,key,columns in [
+            ('处理确认记录','confirmation_records',['类型','原名称','用户决定','依据']),
+            ('重分类记录','reclassification_records',['单位','原科目','原余额','转入科目','重分类金额','说明']),
+            ('对抵记录','offset_records',['往来组合','单位','资产侧余额','负债侧余额','对抵金额','最终借方净额']),
+        ]:
+            records=config.get(key,[])
+            sheets.append((title,pd.DataFrame(records,columns=columns)))
+        for title,key in [('计算用期初','opening_source'),('计算用序时账','journal_source')]:
+            if isinstance(config.get(key),pd.DataFrame):sheets.append((title,config[key]))
+        sheets.append(('参数说明',self._build_config(config)))
+        return sheets
 
-        make_excel(sheets, output_path)
-        self._patch_summary_formulas(output_path, debit_results, config, '借方账龄汇总表')
-        self._patch_summary_formulas(output_path, credit_results, config, '贷方账龄汇总表')
+    def _build_final_summary(self, results: list[AgingResult], config: dict):
+        labels=self._get_bucket_labels(config)
+        headers=['科目编码','科目名称','明细名称',*labels,'期末余额','列示类别']
+        rows=[]
+        for r in sorted(results,key=lambda x:(x.direction,x.subject_code,x.detail_name)):
+            if r.closing_balance < -.005 or abs(r.negative_balance)>.005:
+                raise ValueError('反向余额须先经统一计算流程自动重分类后再导出')
+            if abs(r.closing_balance)<.005:continue
+            if abs(sum(r.bucket_totals)-r.closing_balance)>.01:
+                raise ValueError('最终账龄分档与期末余额不一致')
+            rows.append([r.subject_code,r.subject_name,r.detail_name,*r.bucket_totals,r.closing_balance,'资产' if r.direction=='debit' else '负债'])
+        # 资产与负债分别汇总，避免相加形成无业务含义的一个总数。
+        for direction,label in [('debit','资产合计'),('credit','负债合计')]:
+            selected=[r for r in results if r.direction==direction and abs(r.closing_balance)>=.005]
+            if selected:rows.append([label,'','',*[sum(r.bucket_totals[i] for r in selected) for i in range(len(labels))],sum(r.closing_balance for r in selected),''])
+        return pd.DataFrame(rows,columns=headers)
 
     # ─── 账龄汇总表 ───────────────────────────────────────────
     def _build_summary(self, results: list[AgingResult], config: dict) -> pd.DataFrame:
@@ -248,16 +268,16 @@ class ReportGenerator:
         rows = [
             ("计算截止日期", str(config.get("cutoff_date", ""))),
             ("账龄分档", ", ".join(labels)),
-            ("方向口径", config.get("direction_policy", "八类往来按科目类别固定方向")),
+            ("方向口径", config.get("direction_policy", "反向余额自动重分类，按转入科目的方向计算账龄")),
             ("计算口径", config.get("fifo_policy", "先进先出法 (收付款按最老余额优先核销)")),
             ("期初余额日期", str(config.get("opening_date", ""))),
             ("期初模式", config.get("aging_mode", "铁板模式")),
             ("分档边界规则", config.get("bucket_boundary_rule", "边界点归前档")),
             ("反向余额说明", config.get(
                 "negative_balance_policy",
-                "反向余额以负数单列展示，不改变科目所属汇总表",
+                "反向余额自动重分类，并按转入科目的方向重新追溯计算账龄",
             )),
-            ("成对对抵", "截至日各科目账龄算完后，同一单位的成对科目在展示中对抵；先冲减较老的剩余账龄，不改原始账龄结果"),
+            ("最终结果口径", "名称确认与暂估归类后计算，反向余额自动重分类，再按成对科目对抵；最终仅列一套账龄，先扣较老余额"),
             ("未填明细提示", config.get(
                 "blank_detail_policy",
                 "归入（未填明细）的记录可能混合多个对手方，借贷互相核销后账龄结构可能失真，需人工评估",

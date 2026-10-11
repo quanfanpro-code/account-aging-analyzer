@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 
 from src.core.current_accounts import filter_current_accounts, find_category_conflicts
 from src.core.data_loader import DataLoader
-from src.core.orchestrator import AgingOrchestrator
+from src.core.workflow import AgingWorkflow
 from src.core.report import ReportGenerator
 
 
@@ -75,33 +75,38 @@ def main() -> int:
             assert result.retained_rows == sum(result.category_counts.values())
         print("FILTER_LOG_RECONCILIATION_OK")
 
-        results = AgingOrchestrator(
+        workflow = AgingWorkflow(
             cutoff_date=date(2026, 12, 31),
             buckets=[(0, 365)],
             opening_date=date(2025, 12, 31),
-        ).run(opening_result.dataframe, journal_result.dataframe)
+        )
+        results = workflow.run(opening_result.dataframe, journal_result.dataframe)
         assert {result.direction for result in results} == {"debit", "credit"}
         assert next(
             result for result in results
-            if result.subject_code == "1122" and result.detail_name == "（未填明细）"
-        ).negative_balance == -400.0
-        print("FIXED_DIRECTION_OK")
+            if result.subject_code == "2203" and result.detail_name == "（未填明细）"
+        ).closing_balance == 400.0
+        print("AUTO_RECLASSIFICATION_OK")
 
         config = {
             "cutoff_date": date(2026, 12, 31),
             "buckets": [(0, 365)],
             "bucket_labels": ["1年以内"],
             "opening_date": date(2025, 12, 31),
-            "direction_policy": "八类往来按科目类别固定方向",
-            "negative_balance_policy": "反向余额以负数单列展示，不改变科目所属汇总表",
+            "direction_policy": "反向余额自动重分类",
+            "negative_balance_policy": "按转入科目追溯账龄",
+            "source_results": workflow.source_results,
+            "reclassification_records": workflow.reclassification_records,
+            "offset_records": workflow.offset_records,
         }
         ReportGenerator().generate(output_path, results, config)
         workbook = load_workbook(output_path, data_only=False)
-        assert {"借方账龄汇总表", "贷方账龄汇总表"}.issubset(workbook.sheetnames)
-        for sheet_name in ("借方账龄汇总表", "贷方账龄汇总表"):
+        assert "账龄计算结果" in workbook.sheetnames
+        assert "成对对抵后账龄" not in workbook.sheetnames
+        for sheet_name in ("账龄计算结果",):
             headers = [cell.value for cell in workbook[sheet_name][1] if cell.value]
             assert "1年以内" in headers
-            assert "反向余额（待核对）" in headers
+            assert "反向余额（待核对）" not in headers
             assert all(str(header).strip() for header in headers)
         print("BUCKET_HEADERS_OK")
         print("REVERSE_BALANCE_OK")

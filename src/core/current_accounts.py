@@ -29,6 +29,12 @@ EXCLUDED_TERMS = ("坏账准备", "减值准备")
 BLANK_DETAIL = "（未填明细）"
 
 
+def temporary_account_name(name: object) -> str:
+    """仅检测科目名称中的暂估往来，不读取摘要，也不自动决定归属。"""
+    match = re.search(r"暂估(?:其他)?(?:应[收付](?:账款|款)?|预[收付](?:账款|款)?|合同资产|合同负债)", _text(name))
+    return match.group(0) if match else ""
+
+
 @dataclass(frozen=True)
 class CurrentAccountMatch:
     status: str
@@ -88,6 +94,13 @@ def classify_current_account(subject_code: object, subject_name: object) -> Curr
     if any(term in name for term in EXCLUDED_TERMS):
         return CurrentAccountMatch("ignored", None, None, "none", name, "坏账或减值准备")
 
+    temporary = temporary_account_name(name)
+    if temporary:
+        return CurrentAccountMatch(
+            "retained", temporary, "debit" if any(x in temporary for x in ('应收','预付','合同资产')) else "credit",
+            "name", name, warning="暂估往来归属须在计算前由用户确认",
+        )
+
     name_rule = next((rule for rule in ACCOUNT_RULES if rule[0] in name), None)
     code_rule = next((rule for rule in ACCOUNT_RULES if code.startswith(rule[1])), None)
     if name_rule:
@@ -141,7 +154,7 @@ def filter_current_accounts(
         item["明细名称"] = BLANK_DETAIL if detail_is_blank else _text(row.get("明细名称"))
         item[CATEGORY_COLUMN] = match.category
         item[DIRECTION_COLUMN] = match.direction
-        item[SOURCE_COLUMN] = source_label
+        item[SOURCE_COLUMN] = _text(row.get(SOURCE_COLUMN)) or source_label
         retained.append(item)
         categories[match.category] += 1
         recognition["按名称识别" if match.basis == "name" else "按编码辅助识别"] += 1
@@ -168,7 +181,7 @@ def filter_current_accounts(
         retained_rows=retained_rows,
         ignored_rows=ignored_rows,
         ignored_counts=dict(ignored),
-        category_counts={category: categories[category] for category in CATEGORIES},
+        category_counts={category: categories[category] for category in dict.fromkeys([*CATEGORIES, *categories])},
         recognition_counts={
             "按名称识别": recognition["按名称识别"],
             "按编码辅助识别": recognition["按编码辅助识别"],

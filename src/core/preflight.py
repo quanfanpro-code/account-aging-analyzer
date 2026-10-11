@@ -4,7 +4,7 @@ from collections import defaultdict
 from difflib import SequenceMatcher
 import re
 import pandas as pd
-from src.core.current_accounts import classify_current_account, temporary_account_name, CATEGORIES, BLANK_DETAIL
+from src.core.current_accounts import classify_current_account, temporary_account_name, temporary_account_scope, CATEGORIES, BLANK_DETAIL
 
 def text(value):
     return '' if value is None or pd.isna(value) else str(value).strip()
@@ -42,7 +42,9 @@ def detect(opening,journal):
             if match.status=='ignored':continue
             source=text(row.get('_来源工作表')) or title
             evidence=f'{source} 第{number}行 / {name}'
-            if temporary_account_name(name):temporary[code[:4]].append((temporary_account_name(name),evidence))
+            if temporary_account_name(name,code):
+                scope=temporary_account_scope(code,name)
+                temporary[scope].append((temporary_account_name(name,code),f'{scope} '+('一级暂估科目' if len(scope)==4 else '正常往来下的暂估明细')+'；'+evidence))
             detail=text(row.get('明细名称'))
             if not detail or detail==BLANK_DETAIL:continue
             names[detail].append(evidence)

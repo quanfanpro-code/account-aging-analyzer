@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from make_excel import make_excel
 from src.core.current_accounts import BLANK_DETAIL, classify_current_account
 from src.core.models import AgingResult
+from src.core.temporary_transfers import TRANSFER_COLUMNS
 
 PathLike = Union[str, Path]
 
@@ -45,6 +46,7 @@ class ReportGenerator:
         ]
         for title,key,columns in [
             ('处理确认记录','confirmation_records',['类型','原名称','用户决定','依据']),
+            ('内部转科目记录','transfer_records',TRANSFER_COLUMNS),
             ('重分类记录','reclassification_records',['单位','原科目','原余额','转入科目','重分类金额','说明']),
             ('对抵记录','offset_records',['往来组合','单位','资产侧余额','负债侧余额','对抵金额','最终借方净额']),
         ]:

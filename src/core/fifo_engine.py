@@ -54,6 +54,15 @@ class FIFOEngine:
 
         # 先做红字归一化：例如借方口径下 credit=-30 应视作 debit=30。
         normalized_transactions = self._normalize_amounts(transactions)
+        # 内部转科目只改变挂账位置。归集后等额两腿不参与账龄层的核销和新增，原批次逐笔保留。
+        if abs(sum(float(t.get("_转科目借方", 0)) - float(t.get("_转科目贷方", 0)) for t in normalized_transactions)) > .005:
+            raise ValueError("内部转科目借贷抵消金额不平衡")
+        for txn in normalized_transactions:
+            for key, marker in [("debit", "_转科目借方"), ("credit", "_转科目贷方")]:
+                moved = float(txn.get(marker, 0))
+                if moved < 0 or moved - txn[key] > .005:
+                    raise ValueError("内部转科目金额超过原发生额")
+                txn[key] = max(0.0, txn[key] - moved)
         increase_key = "debit" if self.direction == "debit" else "credit"
         decrease_key = "credit" if self.direction == "debit" else "debit"
         sorted_txns = sorted(normalized_transactions, key=lambda t: t["date"])
@@ -87,7 +96,7 @@ class FIFOEngine:
                 if increase_amount > 0:
                     positive_layers.append({
                         "kind": "txn",
-                        "source": txn["date"].isoformat(),
+                        "source": txn["date"].isoformat() + (" / " + txn['_业务单号'] if txn.get('_业务单号') else ""),
                         "source_date": txn["date"],
                         "amount": increase_amount,
                     })

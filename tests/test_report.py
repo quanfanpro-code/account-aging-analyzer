@@ -12,7 +12,7 @@ def test_生成Excel_只有一套最终账龄及追溯记录(tmp_path):
     target=tmp_path/'最终结果.xlsx'
     ReportGenerator().generate(target,[result],{'buckets':[(0,365)]})
     wb=openpyxl.load_workbook(target)
-    assert wb.sheetnames==['账龄计算结果','逐笔追溯明细','原账勾稽','处理确认记录','重分类记录','对抵记录','参数说明']
+    assert wb.sheetnames==['账龄计算结果','逐笔追溯明细','原账勾稽','处理确认记录','内部转科目记录','重分类记录','对抵记录','参数说明']
     assert wb['账龄计算结果']['E2'].value==100
     assert wb['账龄计算结果']['G2'].value=='资产'
     wb.close()

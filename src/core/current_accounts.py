@@ -29,10 +29,39 @@ EXCLUDED_TERMS = ("坏账准备", "减值准备")
 BLANK_DETAIL = "（未填明细）"
 
 
-def temporary_account_name(name: object) -> str:
-    """仅检测科目名称中的暂估往来，不读取摘要，也不自动决定归属。"""
-    match = re.search(r"暂估(?:其他)?(?:应[收付](?:账款|款)?|预[收付](?:账款|款)?|合同资产|合同负债)", _text(name))
-    return match.group(0) if match else ""
+def temporary_account_name(name: object, code: object = "") -> str:
+    """识别所有层级的暂估往来，不从摘要推定科目归属。"""
+    value = _text(name)
+    if "暂估" not in value:
+        return ""
+    match = re.search(r"暂估(?:其他)?(?:应[收付](?:账款|款)?|预[收付](?:账款|款)?|合同资产|合同负债)", value)
+    if match:
+        return match.group(0)
+    rule = next((r for r in ACCOUNT_RULES if r[0] in value), None)
+    rule = rule or next((r for r in ACCOUNT_RULES if _subject_code(code).startswith(r[1])), None)
+    return "暂估" + rule[0] if rule else ""
+
+
+def temporary_account_scope(code: object, name: object) -> str:
+    """独立暂估一级科目按一级确认；正常科目下的暂估分支按具体编码确认。"""
+    code = _subject_code(code)
+    temporary = temporary_account_name(name, code)
+    if not temporary:
+        return ""
+    root_name = re.split(r"[-—/\\]", _text(name))[0]
+    normal = next((r for r in ACCOUNT_RULES if code.startswith(r[1])), None)
+    # 独立暂估编码或一级名称已是暂估，适用其全部下级；正常科目的暂估分支独立确认。
+    if len(code) <= 4 or not normal or (normal[0].replace('账款','款') not in temporary.replace('账款','款')):
+        return code[:4]
+    if root_name.startswith("暂估") and len(code) > 4 and normal[0] not in root_name:
+        return code[:4]
+    parts = re.split(r"[-—/\\]", _text(name))
+    level = next((i for i, part in enumerate(parts) if '暂估' in part), 0)
+    # 层级全名中的暂估分支独立识别；四位一级、每级两位的编码保留到该分支。
+    branch_length = 4 + 2 * level
+    if level and code.isdigit() and len(code) >= branch_length:
+        return code[:branch_length]
+    return code
 
 
 @dataclass(frozen=True)
@@ -94,7 +123,7 @@ def classify_current_account(subject_code: object, subject_name: object) -> Curr
     if any(term in name for term in EXCLUDED_TERMS):
         return CurrentAccountMatch("ignored", None, None, "none", name, "坏账或减值准备")
 
-    temporary = temporary_account_name(name)
+    temporary = temporary_account_name(name, code)
     if temporary:
         return CurrentAccountMatch(
             "retained", temporary, "debit" if any(x in temporary for x in ('应收','预付','合同资产')) else "credit",

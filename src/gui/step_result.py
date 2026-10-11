@@ -304,6 +304,7 @@ class StepResult(ctk.CTkFrame):
             self._state['calculation_trace'] = {
                 'source_results': orch.source_results,
                 'confirmation_records': orch.confirmation_records,
+                'transfer_records': orch.transfer_records,
                 'reclassification_records': orch.reclassification_records,
                 'offset_records': orch.offset_records,
                 'opening_source': orch.opening_input,

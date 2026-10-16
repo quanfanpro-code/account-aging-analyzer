@@ -15,6 +15,8 @@ def test_生成Excel_只有一套最终账龄及追溯记录(tmp_path):
     assert wb.sheetnames==['账龄计算结果','期末余额构成及账龄依据','原账勾稽','处理确认记录','内部转科目记录','重分类记录','对抵记录','参数说明']
     assert wb['账龄计算结果']['E2'].value==100
     assert wb['账龄计算结果']['G2'].value=='资产'
+    assert wb['账龄计算结果'].sheet_properties.tabColor.rgb=='000070C0'
+    assert all(sheet.sheet_properties.tabColor is None for sheet in wb if sheet.title!='账龄计算结果')
     wb.close()
 
 

@@ -38,6 +38,7 @@ class ReportGenerator:
         make_excel(self.build_frames(aging_results, config), output_path)
         book = load_workbook(output_path)
         try:
+            book['账龄计算结果'].sheet_properties.tabColor = '0070C0'
             self._highlight_remarks(book['账龄计算结果'])
             book.save(output_path)
         finally:

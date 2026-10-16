@@ -14,6 +14,8 @@ class AgingEntry:
     amount: float              # 该笔分配到余额的金额
     days: int                  # 账龄天数
     bucket_index: int          # 落到的账龄分档下标；-1 表示负余额单列
+    reclassified_from: str = ""  # 本笔款项重分类前的科目；普通款项留空
+    reclassification_total: float = 0.0  # 原分户反向余额总额，对抵前口径
 
 
 @dataclass

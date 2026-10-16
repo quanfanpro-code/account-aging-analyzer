@@ -50,4 +50,48 @@ def test_对抵后剩另一侧也保留重分类标注并醒目导出(tmp_path):
     assert note.font.bold and note.font.color.rgb=='009C0006'
     assert note.alignment.wrap_text
     assert sheet['F2'].value==50
+    detail=book['期末余额构成及账龄依据']
+    assert detail.cell(1,detail.max_column).value=='备注'
+    entry_note=detail.cell(2,detail.max_column)
+    assert '预收账款借方余额150.00元' in entry_note.value
+    assert '本行期末剩余50.00元' in entry_note.value
+    assert '100.00' not in entry_note.value
+    assert entry_note.font.bold and entry_note.alignment.wrap_text
+    assert detail['G2'].value==50
     book.close()
+
+
+@pytest.mark.parametrize('original,target',[(a,b) for pair in PAIRS for a,b in (pair,pair[::-1])])
+def test_依据表注明四对往来双向重分类前科目及金额(original,target):
+    code,direction=RULES[original]
+    debit,credit=(0,120) if direction=='debit' else (120,0)
+    opening=pd.DataFrame(columns=['科目编码','科目名称','明细名称','借方余额','贷方余额'])
+    journal=pd.DataFrame([[date(2025,1,1),code,original,'单位甲',debit,credit,'业务']],
+        columns=['日期','科目编码','科目名称','明细名称','借方金额','贷方金额','摘要'])
+    flow=AgingWorkflow(date(2025,12,31),[(0,365)])
+    results=flow.run(opening,journal)
+    frame=ReportGenerator()._build_entries(results,{'buckets':[(0,365)]})
+    assert frame.columns[-1]=='备注'
+    assert frame.iloc[0]['科目名称']==target
+    note=frame.iloc[0]['备注']
+    assert '【反向余额重分类】' in note and original in note and target in note
+    assert '分户总额，对抵前' in note and '120.00' in note
+    assert frame.iloc[0]['金额']==120
+
+
+def test_依据表同单位混合来源只标实际重分类明细且总额不当作本行金额():
+    opening=pd.DataFrame(columns=['科目编码','科目名称','明细名称','借方余额','贷方余额'])
+    journal=pd.DataFrame([
+        [date(2025,1,1),'1123','预付账款','单位甲',40,0,'原有预付'],
+        [date(2025,2,1),'2202','应付账款','单位甲',60,0,'预付'],
+        [date(2025,3,1),'2202','应付账款','单位甲',40,0,'预付'],
+    ],columns=['日期','科目编码','科目名称','明细名称','借方金额','贷方金额','摘要'])
+    flow=AgingWorkflow(date(2025,12,31),[(0,365)])
+    results=flow.run(opening,journal)
+    frame=ReportGenerator()._build_entries(results,{'buckets':[(0,365)]})
+    assert len(frame)==3 and frame['金额'].sum()==140
+    original=frame[frame['来源日期']==date(2025,1,1)].iloc[0]
+    assert original['备注']==''
+    for _,row in frame[frame['来源日期']!=date(2025,1,1)].iterrows():
+        assert '应付账款借方余额100.00元（本单位分户总额，对抵前）' in row['备注']
+        assert f"本行期末剩余{row['金额']:,.2f}元" in row['备注']

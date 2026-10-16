@@ -40,6 +40,7 @@ class ReportGenerator:
         try:
             book['账龄计算结果'].sheet_properties.tabColor = '0070C0'
             self._highlight_remarks(book['账龄计算结果'])
+            self._highlight_remarks(book['期末余额构成及账龄依据'])
             book.save(output_path)
         finally:
             book.close()
@@ -267,14 +268,20 @@ class ReportGenerator:
 
     # ─── 期末余额构成及账龄依据 ───────────────────────────────────
     def _build_entries(self, results: list[AgingResult], config: dict) -> pd.DataFrame:
-        headers = ["科目编码", "科目名称", "明细名称", "来源", "来源日期", "金额", "账龄天数", "分档下标"]
+        headers = ["科目编码", "科目名称", "明细名称", "来源", "来源日期", "金额", "账龄天数", "分档下标", "备注"]
         rows = []
         for result in results:
             for entry in result.entries:
+                note = ''
+                if entry.reclassified_from:
+                    direction = '借方' if result.direction=='debit' else '贷方'
+                    note = (f'【反向余额重分类】{entry.reclassified_from}{direction}余额'
+                            f'{entry.reclassification_total:,.2f}元（本单位分户总额，对抵前）；'
+                            f'转入{result.subject_name}，本行期末剩余{entry.amount:,.2f}元')
                 rows.append([
                     result.subject_code, result.subject_name, result.detail_name,
                     entry.source, entry.source_date, entry.amount,
-                    entry.days, entry.bucket_index,
+                    entry.days, entry.bucket_index, note,
                 ])
         return pd.DataFrame(rows, columns=headers)
 

@@ -61,6 +61,8 @@ class AgingWorkflow:
             ranges=[k for k in sorted(self.opening_aging_columns)] if opening_buckets else None
             converted=FIFOEngine(self.cutoff_date,self.buckets,direction).calculate(code,target,r.detail_name,-r.opening_balance,transactions,opening_buckets=opening_buckets,opening_date=self.opening_date,opening_bucket_ranges=ranges)
             if abs(converted.closing_balance+r.closing_balance)>.01:raise ValueError('重分类金额不平衡')
+            # 来源随每笔余额层保留，合并和对抵后仍能区分普通款项与重分类转入款项。
+            converted.entries=[replace(e,reclassified_from=r.subject_name,reclassification_total=round(-r.closing_balance,2)) for e in converted.entries]
             positive.append(converted)
             self.reclassification_records.append({'单位':r.detail_name,'原科目':r.subject_name,'原余额':round(r.closing_balance,2),'转入科目':target,'重分类金额':round(converted.closing_balance,2),'说明':'按转入科目的借贷性质重新追溯发生额计算账龄'})
         return self._offset(positive)

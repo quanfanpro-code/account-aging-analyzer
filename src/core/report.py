@@ -48,7 +48,7 @@ class ReportGenerator:
         source = config.get('source_results', aging_results)
         sheets = [
             ('账龄计算结果', self._build_final_summary(aging_results, config)),
-            ('逐笔追溯明细', self._build_entries(aging_results, config)),
+            ('期末余额构成及账龄依据', self._build_entries(aging_results, config)),
             ('原账勾稽', self._build_closing_check(source).drop(columns=['分档合计+负余额','勾稽差异'])),
         ]
         for title,key,columns in [
@@ -264,7 +264,7 @@ class ReportGenerator:
 
         wb.save(output_path)
 
-    # ─── 逐笔追溯明细 ───────────────────────────────────────────
+    # ─── 期末余额构成及账龄依据 ───────────────────────────────────
     def _build_entries(self, results: list[AgingResult], config: dict) -> pd.DataFrame:
         headers = ["科目编码", "科目名称", "明细名称", "来源", "来源日期", "金额", "账龄天数", "分档下标"]
         rows = []

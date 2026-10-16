@@ -2,12 +2,13 @@
 """生成深海蓝标准格式审计底稿"""
 from __future__ import annotations
 from collections import defaultdict
+from math import ceil
 from pathlib import Path
 from typing import Union
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from make_excel import make_excel
@@ -35,6 +36,12 @@ class ReportGenerator:
         config: dict,
     ) -> None:
         make_excel(self.build_frames(aging_results, config), output_path)
+        book = load_workbook(output_path)
+        try:
+            self._highlight_remarks(book['账龄计算结果'])
+            book.save(output_path)
+        finally:
+            book.close()
 
     def build_frames(self, aging_results: list[AgingResult], config: dict):
         """结果页只有最终账龄；其他页保存计算依据，不再输出并列账龄。"""
@@ -59,7 +66,8 @@ class ReportGenerator:
 
     def _build_final_summary(self, results: list[AgingResult], config: dict):
         labels=self._get_bucket_labels(config)
-        headers=['科目编码','科目名称','明细名称',*labels,'期末余额','列示类别']
+        headers=['科目编码','科目名称','明细名称',*labels,'期末余额','列示类别','备注']
+        remarks = self._result_remarks(aging_results=results, config=config)
         rows=[]
         for r in sorted(results,key=lambda x:(x.direction,x.subject_code,x.detail_name)):
             if r.closing_balance < -.005 or abs(r.negative_balance)>.005:
@@ -67,12 +75,62 @@ class ReportGenerator:
             if abs(r.closing_balance)<.005:continue
             if abs(sum(r.bucket_totals)-r.closing_balance)>.01:
                 raise ValueError('最终账龄分档与期末余额不一致')
-            rows.append([r.subject_code,r.subject_name,r.detail_name,*r.bucket_totals,r.closing_balance,'资产' if r.direction=='debit' else '负债'])
+            rows.append([r.subject_code,r.subject_name,r.detail_name,*r.bucket_totals,r.closing_balance,'资产' if r.direction=='debit' else '负债',remarks.get((r.subject_name,r.detail_name),'')])
         # 资产与负债分别汇总，避免相加形成无业务含义的一个总数。
         for direction,label in [('debit','资产合计'),('credit','负债合计')]:
             selected=[r for r in results if r.direction==direction and abs(r.closing_balance)>=.005]
-            if selected:rows.append([label,'','',*[sum(r.bucket_totals[i] for r in selected) for i in range(len(labels))],sum(r.closing_balance for r in selected),''])
+            if selected:rows.append([label,'','',*[sum(r.bucket_totals[i] for r in selected) for i in range(len(labels))],sum(r.closing_balance for r in selected),'',''])
         return pd.DataFrame(rows,columns=headers)
+
+    @staticmethod
+    def _result_remarks(aging_results, config):
+        pairs = {name:pair for pair in PAIRED_ACCOUNTS for name in pair}
+        records = list(config.get('reclassification_records', []))
+        if not records:
+            for source in config.get('source_results', []):
+                pair = pairs.get(source.subject_name)
+                if pair and source.closing_balance < -.005:
+                    records.append({'单位':source.detail_name,'原科目':source.subject_name,
+                        '转入科目':next(name for name in pair if name!=source.subject_name),
+                        '重分类金额':-source.closing_balance})
+        by_group = defaultdict(list)
+        for item in records:
+            pair = pairs.get(item['原科目'])
+            if pair:
+                direction = '贷方' if item['原科目']==pair[0] else '借方'
+                by_group[(item['单位'],pair)].append(
+                    f"{item['原科目']}{direction}余额{item['重分类金额']:,.2f}元 → {item['转入科目']}")
+        offsets = {(item['单位'],item['往来组合']):item['对抵金额']
+                   for item in config.get('offset_records', []) if item['对抵金额']>.005}
+        remarks = {}
+        for result in aging_results:
+            pair = pairs.get(result.subject_name)
+            if not pair:
+                continue
+            transfers = by_group.get((result.detail_name,pair), [])
+            offset = offsets.get((result.detail_name,' / '.join(pair)), 0)
+            note = '【反向余额重分类】'+ '；'.join(transfers)+'（对抵前金额）' if transfers else ''
+            if offset:
+                note += ('；' if note else '')+f'同单位成对对抵{offset:,.2f}元，期末余额已按净额列示'
+            remarks[(result.subject_name,result.detail_name)] = note
+        return remarks
+
+    @staticmethod
+    def _highlight_remarks(sheet):
+        column = next((cell.column for cell in sheet[1] if cell.value=='备注'), None)
+        if column is None:
+            return
+        sheet.column_dimensions[get_column_letter(column)].width = 72
+        for row in range(2, sheet.max_row+1):
+            cell = sheet.cell(row,column)
+            if not cell.value:
+                continue
+            cell.alignment = Alignment(horizontal='left',vertical='center',wrap_text=True)
+            width = sum(2 if ord(char)>127 else 1 for char in str(cell.value))
+            sheet.row_dimensions[row].height = max(sheet.row_dimensions[row].height or 18,15*ceil(width/70))
+            if str(cell.value).startswith('【反向余额重分类】'):
+                cell.font = Font(name=cell.font.name,size=cell.font.sz,bold=True,color='9C0006')
+                cell.fill = PatternFill('solid',fgColor='FFF2CC')
 
     # ─── 账龄汇总表 ───────────────────────────────────────────
     def _build_summary(self, results: list[AgingResult], config: dict) -> pd.DataFrame:

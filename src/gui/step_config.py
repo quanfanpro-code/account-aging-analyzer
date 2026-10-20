@@ -280,11 +280,18 @@ class StepConfig(ctk.CTkFrame):
             c, text="", font=ctk.CTkFont(size=10), text_color=("gray50", "gray60"),
         )
         self._opening_date_tip.pack(anchor="w")
+        self._include_bills_var = ctk.BooleanVar(value=self._state.get('include_receivable_bills',False))
+        ctk.CTkCheckBox(c,text='纳入应收票据并连续计龄',variable=self._include_bills_var,
+            font=ctk.CTkFont(size=12)).pack(anchor='w',pady=(18,4))
+        ctk.CTkLabel(c,text='商业承兑及票据转回保留原债权账龄；类型不明时先确认口径。',
+            wraplength=390,justify='left',font=ctk.CTkFont(size=11),
+            text_color=('gray50','gray60')).pack(anchor='w')
         return card
 
     def validate(self) -> bool:
         """校验参数合法性"""
         errors = []
+        self._state['include_receivable_bills'] = bool(self._include_bills_var.get())
 
         # 校验截止日期
         cutoff = None

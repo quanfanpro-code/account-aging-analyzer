@@ -152,6 +152,7 @@ def filter_current_accounts(
     *,
     data_kind: str,
     source_label: str,
+    include_receivable_bills: bool = False,
 ) -> CurrentAccountFilterResult:
     """过滤整表并返回可复核统计；不修改传入的原始数据。"""
     if data_kind not in {"opening", "journal"}:
@@ -171,6 +172,12 @@ def filter_current_accounts(
     for row_number, (_, row) in enumerate(df.iterrows(), start=2):
         original_name = _text(row.get("科目名称"))
         match = classify_current_account(row.get("科目编码"), original_name)
+        is_bill = ('应收票据' in original_name or (
+            _subject_code(row.get('科目编码')).startswith('1121')
+            and not any(rule[0] in original_name for rule in ACCOUNT_RULES)))
+        if include_receivable_bills and is_bill and not any(term in original_name for term in EXCLUDED_TERMS):
+            match = CurrentAccountMatch('retained','应收票据','debit',
+                'name' if '应收票据' in original_name else 'code',original_name or '应收票据')
         if match.status == "ignored":
             ignored[match.ignored_reason] += 1
             continue

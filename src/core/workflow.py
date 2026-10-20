@@ -7,6 +7,7 @@ from src.core.current_accounts import ACCOUNT_RULES,CATEGORIES,CATEGORY_COLUMN,D
 from src.core.orchestrator import AgingOrchestrator
 from src.core.fifo_engine import FIFOEngine
 from src.core.temporary_transfers import mark_transfers
+from src.core.receivable_bills import ReceivableBillEngine
 
 PAIRS=(('应收账款','预收账款'),('预付账款','应付账款'),('其他应收款','其他应付款'),('合同资产','合同负债'))
 RULES={name:(code,direction) for name,code,direction in ACCOUNT_RULES}
@@ -22,7 +23,7 @@ class AgingWorkflow:
     @staticmethod
     def preflight(opening,journal):return detect(opening,journal)
 
-    def run(self,opening,journal,*,temporary_assignments=None,name_decisions=None):
+    def run(self,opening,journal,*,temporary_assignments=None,name_decisions=None,include_receivable_bills=False,bill_decisions=None):
         temporary_assignments=temporary_assignments or {};name_decisions=name_decisions or {}
         pending=self.preflight(opening,journal)
         for item in pending.temporary:
@@ -32,7 +33,15 @@ class AgingWorkflow:
         self.confirmation_records=[{'类型':'科目归属','原名称':x.name,'用户决定':temporary_assignments[x.code] or '本次不纳入','依据':x.evidence} for x in pending.temporary]
         self.confirmation_records += [{'类型':'单位名称','原名称':' / '.join(x.key),'用户决定':name_decisions[x.key] or '分别计算','依据':x.evidence} for x in pending.names]
         def prepare(df,kind):
-            selected=filter_current_accounts(df,data_kind=kind,source_label=kind).dataframe
+            df=df.copy()
+            if '科目编码' not in df:df['科目编码']=''
+            if '科目名称' not in df:df['科目名称']=''
+            if include_receivable_bills and kind=='journal' and '原账行号' not in df:
+                df['原账行号']=range(2,len(df)+2)
+            names=df['科目名称'].fillna('').astype(str)
+            is_bill=names.str.contains('应收票据') | (df['科目编码'].astype(str).str.startswith('1121') & ~names.str.contains('|'.join(CATEGORIES)))
+            is_bill &= ~names.str.contains('坏账准备|减值准备')
+            selected=filter_current_accounts(df[~is_bill] if include_receivable_bills else df,data_kind=kind,source_label=kind).dataframe
             selected['_原科目编码']=selected.get('原科目编码',selected['科目编码']);selected['_原单位名称']=selected['明细名称']
             selected['_原科目名称']=selected.get('原科目名称',selected['_原科目名称'])
             selected['_是否暂估']=[bool(temporary_account_name(r['科目名称'],r['科目编码'])) for _,r in selected.iterrows()]
@@ -45,14 +54,32 @@ class AgingWorkflow:
                 code,direction=RULES[category]
                 selected.loc[index,['科目编码','科目名称',CATEGORY_COLUMN,DIRECTION_COLUMN]]=[code,category,category,direction]
                 selected.loc[index,'明细名称']=aliases.get(row['明细名称'],row['明细名称'])
-            return selected.drop(index=drop)
+            selected=selected.drop(index=drop)
+            if include_receivable_bills:
+                bills=df[is_bill].copy()
+                bills['_原科目编码']=bills.get('原科目编码',bills['科目编码'])
+                bills['_原科目名称']=bills.get('原科目名称',bills['科目名称'])
+                bills['_原单位名称']=bills['明细名称']
+                bills['明细名称']=bills['明细名称'].map(lambda name:aliases.get(name,name))
+                bills['科目编码']='1121';bills['科目名称']='应收票据'
+                bills[CATEGORY_COLUMN]='应收票据';bills[DIRECTION_COLUMN]='debit';bills['_是否暂估']=False
+                selected=pd.concat([selected,bills],axis=0).sort_index(kind='stable')
+            return selected
         self.opening_input=prepare(opening,'opening');self.journal_input=prepare(journal,'journal')
         self.journal_input,self.transfer_records=mark_transfers(self.journal_input,self.cutoff_date)
         orch=AgingOrchestrator(self.cutoff_date,self.buckets,opening_date=self.opening_date,opening_aging_columns=self.opening_aging_columns,on_progress=self.on_progress)
         source=orch.run(self.opening_input,self.journal_input)
+        self.bill_transfer_records=[];self.bill_policy_records=[]
+        if include_receivable_bills:
+            bill_engine=ReceivableBillEngine(self.cutoff_date,self.buckets,opening_date=self.opening_date,opening_aging_columns=self.opening_aging_columns)
+            bill_results=bill_engine.run(self.opening_input,self.journal_input,decisions=bill_decisions)
+            source=[r for r in source if r.subject_code not in ('1121','1122')]+bill_results
+            self.bill_transfer_records=bill_engine.transfer_records;self.bill_policy_records=bill_engine.policy_records
         self.source_results=source;self.last_warnings=orch.last_warnings;self.last_stats=orch.last_stats;self.last_direction_log=orch.last_direction_log
         self.reclassification_records=[];positive=[]
         for r in source:
+            if r.subject_name=='应收票据' and r.closing_balance<-.005:
+                raise ValueError(f'{r.detail_name}应收票据为贷方余额{-r.closing_balance:,.2f}元，需核对票据收付及结算客户，不能自动改列预收账款')
             if r.closing_balance>=-.005:positive.append(r);continue
             target=OPPOSITE[r.subject_name];code,direction=RULES[target]
             txn=self.journal_input[(self.journal_input['科目编码']==r.subject_code)&(self.journal_input['明细名称']==r.detail_name)]
@@ -60,6 +87,9 @@ class AgingWorkflow:
             opening_buckets=[-x for x in r.opening_bucket_totals] if r.opening_balance<0 and r.opening_bucket_totals else None
             ranges=[k for k in sorted(self.opening_aging_columns)] if opening_buckets else None
             converted=FIFOEngine(self.cutoff_date,self.buckets,direction).calculate(code,target,r.detail_name,-r.opening_balance,transactions,opening_buckets=opening_buckets,opening_date=self.opening_date,opening_bucket_ranges=ranges)
+            if include_receivable_bills and r.subject_code=='1122':
+                entries=[replace(e,amount=-e.amount,bucket_index=FIFOEngine(self.cutoff_date,self.buckets)._find_bucket(e.days)) for e in r.entries if e.amount<0]
+                converted=replace(converted,entries=entries,bucket_totals=[sum(e.amount for e in entries if e.bucket_index==i) for i in range(len(self.buckets))])
             if abs(converted.closing_balance+r.closing_balance)>.01:raise ValueError('重分类金额不平衡')
             # 来源随每笔余额层保留，合并和对抵后仍能区分普通款项与重分类转入款项。
             converted.entries=[replace(e,reclassified_from=r.subject_name,reclassification_total=round(-r.closing_balance,2)) for e in converted.entries]
@@ -68,14 +98,15 @@ class AgingWorkflow:
         return self._offset(positive)
 
     def _offset(self,results):
-        grouped=defaultdict(list);self.offset_records=[]
+        grouped=defaultdict(list);self.offset_records=[];final=[]
         for number,r in enumerate(results):
             if abs(r.closing_balance)<.005:continue
+            if r.subject_name=='应收票据':
+                final.append(r);continue
             pair=next(p for p in PAIRS if r.subject_name in p)
             # 无明细时不能认定为同一单位，按原科目隔离列示。
             key=(pair,r.detail_name, r.subject_name if r.detail_name==BLANK_DETAIL else '')
             grouped[key].append(r)
-        final=[]
         for (pair,unit,_),items in sorted(grouped.items()):
             amounts={name:round(sum(x.closing_balance for x in items if x.subject_name==name),2) for name in pair}
             offset=min(amounts.values());net=round(amounts[pair[0]]-amounts[pair[1]],2)

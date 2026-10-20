@@ -60,9 +60,16 @@ class ReportGenerator:
             ('对抵记录','offset_records',['往来组合','单位','资产侧余额','负债侧余额','对抵金额','最终借方净额']),
         ]:
             records=config.get(key,[])
-            sheets.append((title,pd.DataFrame(records,columns=columns)))
+            frame=pd.DataFrame(records,columns=columns)
+            if key=='transfer_records':
+                frame=frame.rename(columns={'暂估日期':'暂估侧记账日期','正式日期':'正式侧记账日期'})
+            sheets.append((title,frame))
         for title,key in [('计算用期初','opening_source'),('计算用序时账','journal_source')]:
             if isinstance(config.get(key),pd.DataFrame):sheets.append((title,config[key]))
+        if config.get('bill_transfer_records'):
+            sheets.append(('票据连续计龄依据',pd.DataFrame(config['bill_transfer_records'])))
+        if config.get('bill_policy_records'):
+            sheets.append(('票据口径确认',pd.DataFrame(config['bill_policy_records'])))
         sheets.append(('参数说明',self._build_config(config)))
         return sheets
 
@@ -108,12 +115,16 @@ class ReportGenerator:
         for result in aging_results:
             pair = pairs.get(result.subject_name)
             if not pair:
+                if any(entry.bill_transfer_note for entry in result.entries):
+                    remarks[(result.subject_name,result.detail_name)]='【票据连续计龄】沿用原始债权账龄，转科目不重新起算；详见期末余额构成及账龄依据'
                 continue
             transfers = by_group.get((result.detail_name,pair), [])
             offset = offsets.get((result.detail_name,' / '.join(pair)), 0)
             note = '【反向余额重分类】'+ '；'.join(transfers)+'（对抵前金额）' if transfers else ''
             if offset:
                 note += ('；' if note else '')+f'同单位成对对抵{offset:,.2f}元，期末余额已按净额列示'
+            if any(entry.bill_transfer_note for entry in result.entries):
+                note += ('；' if note else '')+'【票据连续计龄】沿用原始债权账龄，详见余额构成依据'
             remarks[(result.subject_name,result.detail_name)] = note
         return remarks
 
@@ -130,7 +141,7 @@ class ReportGenerator:
             cell.alignment = Alignment(horizontal='left',vertical='center',wrap_text=True)
             width = sum(2 if ord(char)>127 else 1 for char in str(cell.value))
             sheet.row_dimensions[row].height = max(sheet.row_dimensions[row].height or 18,15*ceil(width/70))
-            if str(cell.value).startswith('【反向余额重分类】'):
+            if '【反向余额重分类】' in str(cell.value) or '【票据连续计龄】' in str(cell.value):
                 cell.font = Font(name=cell.font.name,size=cell.font.sz,bold=True,color='9C0006')
                 cell.fill = PatternFill('solid',fgColor='FFF2CC')
 
@@ -278,6 +289,8 @@ class ReportGenerator:
                     note = (f'【反向余额重分类】{entry.reclassified_from}{direction}余额'
                             f'{entry.reclassification_total:,.2f}元（本单位分户总额，对抵前）；'
                             f'转入{result.subject_name}，本行期末剩余{entry.amount:,.2f}元')
+                if entry.bill_transfer_note:
+                    note += ('；' if note else '')+(f'【票据连续计龄】原始来源{entry.source}；{entry.bill_transfer_note}；本行期末剩余{entry.amount:,.2f}元')
                 rows.append([
                     result.subject_code, result.subject_name, result.detail_name,
                     entry.source, entry.source_date, entry.amount,

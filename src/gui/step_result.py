@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox
 from src.gui.widgets import Card, make_button
 from src.core.workflow import AgingWorkflow
 from src.gui.confirmation_dialog import ConfirmationDialog
+from src.gui.票据确认窗口 import BillConfirmationDialog
+from src.core.receivable_bills import BillConfirmationRequired
 from src.core.report import ReportGenerator
 from src.core.data_loader import DataLoader
 from src.core.current_accounts import (
@@ -154,6 +156,12 @@ class StepResult(ctk.CTkFrame):
                     ConfirmationDialog(self, pending, complete, self._state.get('confirmation_decisions'))
                 elif kind == "calc_done":
                     self._on_calc_done(payload)
+                elif kind == 'bill_confirmation':
+                    pending, event, answer = payload
+                    self._status_label.configure(text='等待票据计龄口径确认')
+                    def complete_bills(decisions,answer=answer,event=event):
+                        answer['decisions']=decisions;event.set()
+                    BillConfirmationDialog(self,pending,complete_bills)
                 elif kind == "calc_error":
                     messagebox.showerror("计算失败", f"{payload}\n详情见右侧计算日志")
                 elif kind == "export_done":
@@ -229,11 +237,13 @@ class StepResult(ctk.CTkFrame):
                 opening_df,
                 data_kind="opening",
                 source_label=f"期初余额/{self._state.get('opening_sheet') or '(无期初)'}",
+                include_receivable_bills=self._state.get('include_receivable_bills',False),
             )
             journal_result = filter_current_accounts(
                 journal_df,
                 data_kind="journal",
                 source_label=f"序时账/{self._state.get('journal_sheet') or '(未选择)'}",
+                include_receivable_bills=self._state.get('include_receivable_bills',False),
             )
             for title, filter_result in (("期初余额", opening_result), ("序时账", journal_result)):
                 self._log(f"--- {title}过滤结果 ---")
@@ -246,7 +256,7 @@ class StepResult(ctk.CTkFrame):
             if conflicts:
                 raise ValueError(format_category_conflicts(conflicts))
             if opening_result.retained_rows + journal_result.retained_rows == 0:
-                raise ValueError("所选数据中未识别到八类往来")
+                raise ValueError("所选数据中未识别到本次纳入的往来科目")
             opening_df = opening_df.copy()
             journal_df = journal_df.copy()
             opening_df['_来源工作表'] = f"{self._state.get('opening_path') or '(无期初)'} | {self._state.get('opening_sheet') or ''}"
@@ -260,6 +270,7 @@ class StepResult(ctk.CTkFrame):
             )
             if self._state.get('confirmation_input_signature') != input_signature:
                 self._state.pop('confirmation_decisions', None)
+                self._state.pop('bill_decisions',None)
             decisions = {'temporary': {}, 'names': {}}
             cached = self._state.get('confirmation_decisions', {})
             cache_complete = (
@@ -299,8 +310,24 @@ class StepResult(ctk.CTkFrame):
             )
 
             self._log("开始 FIFO 账龄计算...")
-            results = orch.run(opening_df, journal_df,
-                temporary_assignments=decisions['temporary'], name_decisions=decisions['names'])
+            bill_decisions=list(self._state.get('bill_decisions',[]))
+            while True:
+                try:
+                    results = orch.run(opening_df, journal_df,
+                        temporary_assignments=decisions['temporary'], name_decisions=decisions['names'],
+                        include_receivable_bills=self._state.get('include_receivable_bills',False),
+                        bill_decisions=bill_decisions)
+                    break
+                except BillConfirmationRequired as error:
+                    event=threading.Event();answer={}
+                    self._msg_queue.put(('bill_confirmation',(error.candidates,event,answer)))
+                    event.wait()
+                    if answer.get('decisions') is None:
+                        self._log('已取消票据口径确认，本次未完成计算')
+                        self._msg_queue.put(('calc_done',False));return
+                    bill_decisions.extend(answer['decisions'])
+                    self._state['bill_decisions']=bill_decisions
+            self._state['confirmation_input_signature']=input_signature
             self._state['calculation_trace'] = {
                 'source_results': orch.source_results,
                 'confirmation_records': orch.confirmation_records,
@@ -309,6 +336,8 @@ class StepResult(ctk.CTkFrame):
                 'offset_records': orch.offset_records,
                 'opening_source': orch.opening_input,
                 'journal_source': orch.journal_input,
+                'bill_transfer_records': orch.bill_transfer_records,
+                'bill_policy_records': orch.bill_policy_records,
             }
             for warning in getattr(orch, "last_warnings", []):
                 self._log(f"⚠️ {warning}")

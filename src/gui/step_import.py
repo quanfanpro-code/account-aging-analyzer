@@ -54,7 +54,7 @@ def format_filter_summary(result: CurrentAccountFilterResult) -> str:
         lines.append("忽略原因：" + "；".join(
             f"{reason} {count} 行" for reason, count in result.ignored_counts.items()
         ))
-    lines.append("八类往来：" + "；".join(
+    lines.append("往来分项：" + "；".join(
         f"{category} {count} 行" for category, count in result.category_counts.items()
     ))
     lines.append("识别方式：" + "；".join(
@@ -397,8 +397,11 @@ class StepImport(ctk.CTkFrame):
             mapped,
             data_kind=data_kind,
             source_label=f"{source_name}/{self._state.get(f'{prefix}_sheet') or ''}",
+            include_receivable_bills=True,
         )
         text = format_filter_summary(result)
+        if result.category_counts.get('应收票据',0):
+            text += '\n已识别应收票据；是否纳入计算，在第二步勾选。'
         if type_warnings:
             text += "\n数据提示：" + "；".join(type_warnings)
         self._state[f"{prefix}_filter_summary"] = text

@@ -21,6 +21,7 @@ def test_生成Excel_只有一套最终账龄及追溯记录(tmp_path):
 
 
 def test_备注排版在首次保存前完成(tmp_path, monkeypatch):
+    """页签色等排版随一次写入生效，全程不再经过 openpyxl 保存。"""
     original_save = openpyxl.Workbook.save
     saves = []
 
@@ -34,7 +35,7 @@ def test_备注排版在首次保存前完成(tmp_path, monkeypatch):
     )
     target = tmp_path / '只保存一次.xlsx'
     ReportGenerator().generate(target, [result], {'buckets': [(0, 365)]})
-    assert len(saves) == 1
+    assert saves == []
     book = openpyxl.load_workbook(target)
     assert book['账龄计算结果'].sheet_properties.tabColor.rgb == '000070C0'
     book.close()
